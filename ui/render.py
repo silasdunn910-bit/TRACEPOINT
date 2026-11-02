@@ -13,6 +13,7 @@ from ui.theme import CONF_DOT, CONF_STYLE, STATUS_ICON, STATUS_STYLE
 
 
 def confidence_text(conf: str) -> Text:
+    conf = normalize_confidence(conf)
     return Text(f"{CONF_DOT.get(conf, '·')} {conf}", style=CONF_STYLE.get(conf, "white"))
 
 

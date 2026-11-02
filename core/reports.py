@@ -28,6 +28,8 @@ def build(inv_id: int) -> dict:
     if not inv:
         raise ValueError("Investigation not found")
     findings = [dict(f) for f in db.findings(inv_id)]
+    for f in findings:  # present legacy grades (STRONG) under the current taxonomy; stored data is untouched
+        f["confidence"] = normalize_confidence(f["confidence"])
     sources = [dict(s) for s in db.sources(inv_id)]
     ents = [dict(e) for e in db.entities_for(inv_id)]
     rels = [dict(r) for r in db.relationships_for(inv_id)]

@@ -10,7 +10,7 @@ import re
 from urllib.parse import urlparse
 
 from core.http import HttpError
-from core.models import (E_DOMAIN, LOW, MODERATE, STRONG, UNVERIFIED, VERIFIED, Finding, ModuleResult)
+from core.models import (E_DOMAIN, LOW, MODERATE, UNVERIFIED, VERIFIED, Finding, ModuleResult)
 from modules import domain_intel
 from providers import domain_providers as dp
 
@@ -102,7 +102,7 @@ def investigate(target: str) -> ModuleResult:
                 if registered.tzinfo is None:
                     registered = registered.replace(tzinfo=dt.timezone.utc)
                 age_days = (dt.datetime.now(dt.timezone.utc) - registered).days
-                conf = STRONG if age_days < 30 else MODERATE if age_days < 90 else LOW
+                conf = MODERATE if age_days < 30 else LOW  # single RDAP record: an indicator, not corroborated
                 note = "VERY recently registered" if age_days < 30 else "recently registered" if age_days < 90 else "established"
                 if age_days < 90:
                     indicators += 1
@@ -153,7 +153,7 @@ def investigate(target: str) -> ModuleResult:
             if mal or susp:
                 indicators += 2
             res.add(Finding("VirusTotal reputation", f"{mal} malicious / {susp} suspicious vendor verdicts.",
-                            "VirusTotal", STRONG if mal >= 3 else MODERATE if (mal or susp) else LOW, "reputation",
+                            "VirusTotal", MODERATE if (mal or susp) else LOW, "reputation",
                             f"{mal}/{susp}", f"https://www.virustotal.com/gui/domain/{host}", str(st),
                             "Vendor verdicts can be stale or false positives."))
             res.source("VirusTotal", f"https://www.virustotal.com/gui/domain/{host}")
