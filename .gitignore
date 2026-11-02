@@ -1,0 +1,51 @@
+﻿# Python environments
+.venv/
+.venv.*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# Environment variables and credentials
+.env
+.env.*
+!.env.example
+config/.env
+
+# Databases and investigation records
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.lock
+
+# Private investigation data
+data/*
+!data/.gitkeep
+backups/*
+!backups/.gitkeep
+logs/*
+!logs/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# Logs
+*.log
+
+# API keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/

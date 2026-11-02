@@ -1,0 +1,4 @@
+rich>=13.7
+requests>=2.31
+dnspython>=2.6
+phonenumbers>=8.13
