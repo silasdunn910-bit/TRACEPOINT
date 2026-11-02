@@ -8,6 +8,7 @@ from typing import Callable
 
 from core import search_engine
 from core.configuration import API_INTEGRATIONS
+from core.security import mask
 from providers.search_providers import validate_searxng_url
 
 MAX_LEN = 512
@@ -33,6 +34,26 @@ def validate_credential(key: str, raw: str) -> tuple[str, str]:
     if len(value) < MIN_LEN:
         return "", f"The value is too short to be a valid credential (minimum {MIN_LEN} characters). Nothing was changed."
     return value, ""
+
+
+def display_value(key: str, value: str) -> str:
+    """What the configuration screen may show for a stored credential.
+
+    The SearXNG address is not a secret (validate_searxng_url forbids embedded credentials and
+    query strings), but only scheme://host:port is shown in case the path carries a token.
+    Everything else goes through mask()."""
+    if not value:
+        return ""
+    if key == "searxng_url":
+        from urllib.parse import urlparse
+        try:
+            p = urlparse(value)
+            if p.scheme in ("http", "https") and p.hostname:
+                host = p.hostname if ":" not in p.hostname else f"[{p.hostname}]"
+                return f"{p.scheme}://{host}{':' + str(p.port) if p.port else ''}"
+        except ValueError:
+            pass
+    return mask(value)
 
 
 def save_credential(db, key: str, raw: str) -> tuple[bool, str]:

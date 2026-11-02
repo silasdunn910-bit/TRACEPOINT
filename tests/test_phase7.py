@@ -19,7 +19,7 @@ def local_server():
             seen.append(self.path)
             if self.path.startswith("/redir"):
                 self.send_response(302)
-                self.send_header("Location", f"http://127.0.0.1:{srv.server_address[1]}/internal")
+                self.send_header("Location", f"http://redir-target.test:{srv.server_address[1]}/internal")
                 self.end_headers()
             else:
                 self.send_response(200)
@@ -67,11 +67,13 @@ def test_public_only_refuses_non_http_and_link_local(url):
 
 def test_public_only_checks_every_redirect_hop(local_server, monkeypatch):
     port, seen = local_server
-    # Pretend the first hop is public so we can prove the redirect target is what gets blocked.
-    real = http._assert_public_url
-    monkeypatch.setattr(http, "_assert_public_url", lambda u: None if u.endswith("/redir/a") else real(u))
+    # hop1.test is allowed (stands in for a public host); the redirect target resolves to a private address.
+    fake = {"hop1.test": "127.0.0.1", "redir-target.test": "10.0.0.1"}
+    monkeypatch.setattr(http.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: [(2, 1, 6, "", (fake.get(host, host), port))])
+    monkeypatch.setattr(http, "is_public_ip", lambda a: a == "127.0.0.1")
     with pytest.raises(http.HttpError):
-        http.get(f"http://127.0.0.1:{port}/redir/a", public_only=True)
+        http.get(f"http://hop1.test:{port}/redir/a", public_only=True)
     assert seen == ["/redir/a"]  # never reached /internal
 
 

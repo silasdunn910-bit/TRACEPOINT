@@ -59,7 +59,7 @@ $depsExit = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
 if ($depsExit -ne 0) {
     Warn "Dependencies missing or broken - reinstalling..."
-    & $vpy -m pip install -r (Join-Path $Root "requirements.txt") --quiet
+    & $vpy -m pip install -r (Join-Path $Root "requirements.txt") -c (Join-Path $Root "constraints.txt") --quiet
     if ($LASTEXITCODE -ne 0) { Die "Dependency reinstall failed." }
 }
 

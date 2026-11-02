@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .configuration import BACKUP_DIR, DB_PATH
 from .models import ModuleResult, now_iso
-from .security import decrypt_secret, encrypt_secret
+from .security import decrypt_secret, encrypt_secret, redact, register_secret
 
 MIGRATIONS: list[str] = [
     # v1 -------------------------------------------------------------------
@@ -209,12 +209,12 @@ class Database:
             cur = self.conn.execute(
                 "INSERT INTO investigations(ref,inv_type,target,status,created_at,updated_at,notes) VALUES (?,?,?,?,?,?,?)",
                 (ref, inv_type, target, "complete" if not result.errors else "complete_with_errors", ts, ts,
-                 "\n".join(result.notes)))
+                 redact("\n".join(result.notes))))
             inv_id = cur.lastrowid
             for s in result.sources:
                 self.conn.execute(
                     "INSERT INTO sources(investigation_id,name,url,status,detail,consulted_at) VALUES (?,?,?,?,?,?)",
-                    (inv_id, s.name, s.url, s.status, s.detail, s.consulted_at))
+                    (inv_id, s.name, s.url, s.status, redact(s.detail), s.consulted_at))
             for f in result.findings:
                 self.conn.execute(
                     """INSERT OR IGNORE INTO findings(investigation_id,fingerprint,category,title,value,description,
@@ -347,6 +347,7 @@ class Database:
             self.conn.commit()
 
     def set_secret(self, name: str, value: str):
+        register_secret(value)
         with self._lock:
             self.conn.execute("""INSERT INTO api_config(name,secret,updated_at) VALUES (?,?,?)
                                  ON CONFLICT(name) DO UPDATE SET secret=excluded.secret, updated_at=excluded.updated_at""",
@@ -358,9 +359,11 @@ class Database:
         if not rows:
             return ""
         try:
-            return decrypt_secret(rows[0]["secret"])
+            value = decrypt_secret(rows[0]["secret"])
         except Exception:
             return ""
+        register_secret(value)
+        return value
 
     def delete_secret(self, name: str):
         with self._lock:

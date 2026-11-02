@@ -474,7 +474,7 @@ def api_config():
                 status = Text(f"● {st}", style=style)
             else:
                 status = Text("● CONFIGURED (no test available)", style="tp.warn")
-            t.add_row(str(i), label, cat, status, mask(db.get_secret(k)) if k in names else "")
+            t.add_row(str(i), label, cat, status, credentials.display_value(k, db.get_secret(k)) if k in names else "")
         console.print(t)
         sel = ask("Number to set/update, 'd N' to delete, 't' to test search providers, blank to return")
         if not sel:

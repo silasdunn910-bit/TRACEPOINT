@@ -1,4 +1,6 @@
-rich>=13.7
-requests>=2.31
-dnspython>=2.6
-phonenumbers>=8.13
+# Direct runtime dependencies, pinned to the versions TRACEPOINT is tested with.
+# Transitive packages are pinned in constraints.txt. Python 3.11+ (dnspython 2.9 requires it).
+rich==15.0.0
+requests==2.34.2
+dnspython==2.9.1
+phonenumbers==9.0.42

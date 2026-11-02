@@ -19,12 +19,12 @@ foreach ($cmd in @("python","py -3","python3")) {
     try {
         $v = & cmd /c "$cmd --version" 2>&1
         if ($LASTEXITCODE -eq 0 -and $v -match "Python 3\.(\d+)") {
-            if ([int]$Matches[1] -ge 10) { $python = $cmd; Ok "Found $v ($cmd)"; break }
-            else { Warn "$v is too old (need 3.10+)" }
+            if ([int]$Matches[1] -ge 11) { $python = $cmd; Ok "Found $v ($cmd)"; break }
+            else { Warn "$v is too old (need 3.11+)" }
         }
     } catch {}
 }
-if (-not $python) { Die "Python 3.10+ not found. Install from https://www.python.org/downloads/ and re-run." }
+if (-not $python) { Die "Python 3.11+ not found. Install from https://www.python.org/downloads/ and re-run." }
 
 # --- venv -----------------------------------------------------------------
 $venv = Join-Path $Root ".venv"
@@ -42,7 +42,7 @@ if (-not (Test-Path $vpy)) { Die "venv python not found at $vpy" }
 Info "Upgrading pip..."
 & $vpy -m pip install --upgrade pip --quiet
 Info "Installing dependencies from requirements.txt..."
-& $vpy -m pip install -r (Join-Path $Root "requirements.txt") --quiet
+& $vpy -m pip install -r (Join-Path $Root "requirements.txt") -c (Join-Path $Root "constraints.txt") --quiet
 if ($LASTEXITCODE -ne 0) { Die "Dependency installation failed." }
 Ok "Dependencies installed."
 

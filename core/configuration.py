@@ -10,7 +10,10 @@ from pathlib import Path
 APP_NAME = "TRACEPOINT"
 VERSION = "1.0.1"
 
-ROOT = Path(__file__).resolve().parent.parent
+# TRACEPOINT_HOME relocates all data (database, reports, logs, config, backups). The test suite
+# sets it to a temporary directory so tests can never touch the real investigation data.
+ROOT = (Path(os.environ["TRACEPOINT_HOME"]).resolve() if os.environ.get("TRACEPOINT_HOME")
+        else Path(__file__).resolve().parent.parent)
 DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
 LOGS_DIR = ROOT / "logs"
@@ -65,11 +68,17 @@ API_INTEGRATIONS: dict[str, tuple[str, str, str]] = {
 
 class _RedactFilter(logging.Filter):
     """Removes anything that looks like a credential from log lines."""
-    _pat = re.compile(r"(?i)(key|token|apikey|api_key|authorization|hibp-api-key|x-apikey|cx)=([^&\s]+)")
+    _pat = re.compile(r"(?i)(key|token|apikey|api_key|authorization|hibp-api-key|x-apikey|x-subscription-token|cx)=([^&\s]+)")
+    _hdr = re.compile(r"(?i)\b(authorization|x-subscription-token|x-apikey|hibp-api-key|api-key|key)\s*:\s*(?:bearer\s+)?[^\s,;]+")
+    _bearer = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{6,}")
 
     def filter(self, record):
+        from .security import redact  # late import: security imports this module
         msg = record.getMessage()
-        record.msg = self._pat.sub(r"\1=***", msg)
+        msg = self._pat.sub(r"\1=***", msg)
+        msg = self._hdr.sub(lambda m: m.group(1) + ": ***", msg)
+        msg = self._bearer.sub("Bearer ***", msg)
+        record.msg = redact(msg)
         record.args = ()
         return True
 

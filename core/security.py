@@ -96,13 +96,39 @@ def decrypt_secret(stored: str) -> str:
     return data.decode("utf-8")
 
 
+MASK_DOTS = "•" * 8  # fixed width: the length of a credential is not revealed either
+MASK_REVEAL_MIN_LEN = 20   # shorter credentials are masked completely
+MASK_REVEAL = 4            # at most the last 4 characters (<= 20% of the shortest revealing value)
+
+
 def mask(value: str) -> str:
-    """Never show a full credential."""
+    """Never show a credential. Short values are fully masked; only very long keys show a short tail."""
     if not value:
         return ""
-    if len(value) <= 8:
-        return "•" * len(value)
-    return value[:3] + "•" * 6 + value[-3:]
+    if len(value) < MASK_REVEAL_MIN_LEN:
+        return MASK_DOTS
+    return MASK_DOTS + value[-MASK_REVEAL:]
+
+
+# Values of credentials seen in this process (stored or read). Used to scrub them from any text
+# that is logged or persisted, even if a remote service echoes one back in an error message.
+_known_secrets: set[str] = set()
+_MIN_SECRET_LEN = 6
+
+
+def register_secret(value: str) -> None:
+    if value and len(value) >= _MIN_SECRET_LEN:
+        _known_secrets.add(value)
+
+
+def redact(text: str) -> str:
+    """Replace every known credential value in `text` with ***."""
+    if not text or not _known_secrets:
+        return text
+    for secret in sorted(_known_secrets, key=len, reverse=True):
+        if secret in text:
+            text = text.replace(secret, "***")
+    return text
 
 
 # --- input validation ------------------------------------------------------
@@ -118,9 +144,31 @@ def clean_input(text: str) -> str:
     return text
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")
+_SIX_TO_FOUR = ipaddress.ip_network("2002::/16")
+
+
 def is_public_ip(value: str) -> bool:
+    """True only for a globally routable unicast address.
+
+    Rejects private, loopback, link-local, multicast, unspecified, reserved, documentation,
+    carrier-grade NAT and other non-global ranges, and looks through IPv6 forms that embed an
+    IPv4 address (IPv4-mapped, 6to4, NAT64) so they cannot smuggle a private IPv4 target.
+    Anything that does not parse is not public.
+    """
     try:
-        ip = ipaddress.ip_address(value)
+        ip = ipaddress.ip_address(str(value).strip().split("%")[0])
     except ValueError:
         return False
-    return ip.is_global
+    if ip.version == 6:
+        embedded = ip.ipv4_mapped
+        if embedded is None and ip in _NAT64:
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        elif embedded is None and ip in _SIX_TO_FOUR:
+            embedded = ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)
+        elif ip in _NAT64_LOCAL:
+            return False
+        if embedded is not None:
+            return is_public_ip(str(embedded))
+    return ip.is_global and not ip.is_multicast

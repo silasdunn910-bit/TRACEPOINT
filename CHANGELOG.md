@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (Phases 7 and 7.1)
+
+### Security
+- Public-only fetches (Social module) now validate every resolved address and connect to that validated address, so DNS rebinding between check and connect cannot reach local or internal hosts. Redirects are followed manually and re-checked; TLS verification is unchanged; environment proxies are ignored for these requests.
+- Address classification also rejects multicast, carrier-grade NAT and IPv4-in-IPv6 forms (mapped, 6to4, NAT64) of non-public IPv4 addresses.
+- Credentials: the configuration screen shows nothing of values under 20 characters (and only the last 4 of longer ones); known credential values and header/bearer shapes are redacted from logs and from persisted error text.
+- Request logs record host and status only.
+
+### Reliability / tooling
+- Atomic investigation saves; menu actions can fail without ending the session; Ctrl-C returns to the menu; the offline Ollama probe is cached for the banner.
+- Dependencies pinned (`requirements.txt`, `constraints.txt`); Python 3.11+ required.
+- Tests run against a temporary `TRACEPOINT_HOME` and fail if the real installation changes.
+
 ## 1.0.1 - 2026-11-02
 
 ### Evidence

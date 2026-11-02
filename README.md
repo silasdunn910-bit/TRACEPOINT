@@ -32,14 +32,18 @@ If PowerShell blocks the scripts, allow them for your user once:
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-**Requirements:** Windows 10/11, Python 3.10+ (`python` on PATH). No Docker, no admin rights, no manually opened second terminal. Ollama is optional.
+**Requirements:** Windows 10/11, Python 3.11+ (`python` on PATH; tested on 3.11.9). No Docker, no admin rights, no manually opened second terminal. Ollama is optional.
 
 **Run the tests (developers):**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt -c constraints.txt
 .\.venv\Scripts\python.exe -m pytest -q      # offline; no live services are contacted
 ```
+
+The tests run against a temporary `TRACEPOINT_HOME` (database, reports, logs, config, backups), created before the application is imported and deleted afterwards. They never write to your real `data\`, `logs\` or `reports\`; the run fails if the real installation changes. `TRACEPOINT_HOME` can also be set to relocate all data for a portable install.
+
+**Dependencies** are pinned: `requirements.txt` lists the direct packages and `constraints.txt` locks every package (install with `-c constraints.txt`, as the launchers do). Tested on Python 3.11.9 and 3.14.3 (Windows). Python 3.10 is not supported because the pinned `dnspython` needs 3.11+. To update, change the pins deliberately, then run `pip check`, `pip-audit` and the tests.
 
 ---
 
