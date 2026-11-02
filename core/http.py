@@ -2,15 +2,17 @@
 consistent error handling. Every outbound request goes through here."""
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
 from .configuration import DEFAULT_TIMEOUT, USER_AGENT, get_logger
+from .security import is_public_ip
 
 log = get_logger()
 
@@ -54,10 +56,43 @@ def _retry_delay(response, attempt: int) -> float:
     return min(4.0, 0.5 * (2 ** attempt))
 
 
+MAX_REDIRECTS = 5
+
+
+def _assert_public_url(url: str):
+    """Refuse non-http(s) URLs and hosts that resolve to loopback/private/link-local addresses."""
+    p = urlparse(url)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise HttpError("Only http(s) URLs are allowed")
+    try:
+        infos = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except OSError:
+        raise HttpError(f"Could not resolve {p.hostname}")
+    if not infos or not all(is_public_ip(i[4][0].split("%")[0]) for i in infos):
+        raise HttpError(f"Refused: {p.hostname} is not a public internet address")
+
+
 def request(method: str, url: str, *, timeout: float = DEFAULT_TIMEOUT, headers: dict | None = None,
             params: dict | None = None, json: dict | list | None = None, data=None,
-            allow_redirects: bool = True, max_bytes: int = MAX_BYTES, retries: int = 0) -> requests.Response:
-    """Make a bounded request with optional retries for transient network/API failures."""
+            allow_redirects: bool = True, max_bytes: int = MAX_BYTES, retries: int = 0,
+            public_only: bool = False) -> requests.Response:
+    """Make a bounded request with optional retries for transient network/API failures.
+
+    public_only=True is for user-supplied URLs: every hop (including redirects, followed manually)
+    must resolve to a public address, so a URL cannot be used to reach local or internal services.
+    """
+    if public_only:
+        for _ in range(MAX_REDIRECTS + 1):
+            _assert_public_url(url)
+            resp = request(method, url, timeout=timeout, headers=headers, params=params, json=json, data=data,
+                           allow_redirects=False, max_bytes=max_bytes, retries=retries)
+            loc = resp.headers.get("Location")
+            if not (allow_redirects and resp.status_code in (301, 302, 303, 307, 308) and loc):
+                return resp
+            url, params = urljoin(url, loc), None
+            if resp.status_code in (301, 302, 303):
+                method, json, data = "GET", None, None
+        raise HttpError("Too many redirects")
     host = urlparse(url).netloc
     attempts = max(0, min(int(retries), 3)) + 1
     for attempt in range(attempts):
@@ -78,7 +113,8 @@ def request(method: str, url: str, *, timeout: float = DEFAULT_TIMEOUT, headers:
                     response.close()
                     raise HttpError(f"Response from {host} exceeded {max_bytes} bytes")
             response._content = bytes(content)
-            log.info("%s %s -> %s", method, host + urlparse(url).path, response.status_code)
+            # host only: URL paths can contain the usernames/identifiers being investigated
+            log.info("%s %s -> %s", method, host, response.status_code)
             return response
         except requests.Timeout:
             if attempt + 1 < attempts:

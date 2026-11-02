@@ -153,6 +153,19 @@ TRACEPOINT/
 - All investigations persist in `data/tracepoint.db` and survive restarts; **History** reopens or deletes them.
 - **Settings → backup-db** snapshots the database into `data/backups/` (last 10 kept).
 
+## Backup, recovery and data protection
+
+**What is sensitive.** `data/tracepoint.db` holds every investigation (targets, findings) and the DPAPI-encrypted API keys; `reports/` holds exported reports; `logs/tracepoint.log` records request hosts and status codes only (no URL paths, targets or keys). None of these folders is committed to Git. Reports never contain API keys.
+
+**Access control.** Credentials are encrypted for the current Windows user only, but the investigation data itself is as readable as the folder. If other local accounts exist, restrict the app folder to your user, for example:
+`icacls "<app folder>" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F"`
+
+**Backup.** Close TRACEPOINT, then copy `data\tracepoint.db` (plus `tracepoint.db-wal` and `tracepoint.db-shm` if present) to a safe place; or use **Settings -> backup-db**, which makes a consistent snapshot in `data\backups\` while the app runs (last 10 kept). Also copy `reports\` if you want the exported files. API keys in a backup can only be decrypted by the same Windows user on the same machine; after restoring on another machine/user, re-enter them under **API Configuration**.
+
+**Recovery.** Close TRACEPOINT, keep the damaged file (rename it `tracepoint.db.bad`), delete any leftover `tracepoint.db-wal` / `-shm`, copy the chosen backup to `data\tracepoint.db`, start the app and check the investigation count in the banner. Check integrity with `.venv\Scripts\python.exe -c "import sqlite3;print(sqlite3.connect('data/tracepoint.db').execute('pragma integrity_check').fetchone())"` (expects `('ok',)`).
+
+**User-supplied URLs.** The Social module only fetches public internet addresses (loopback, private and link-local targets are refused, including via redirects).
+
 ## Legal & ethical note
 
 You are responsible for how you use TRACEPOINT. Use it only on identifiers and infrastructure you own or are authorized to investigate, and in compliance with applicable laws, site terms, and the access controls of the services queried. It reads only public data and does not bypass authentication.

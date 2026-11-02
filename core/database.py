@@ -193,6 +193,16 @@ class Database:
 
     # -- investigations -------------------------------------------------------
     def save_result(self, inv_type: str, target: str, result: ModuleResult) -> int:
+        """Persist a result atomically: any failure rolls back so no partial investigation is kept
+        (and cannot be committed later by an unrelated write on this connection)."""
+        with self._lock:
+            try:
+                return self._save_result(inv_type, target, result)
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    def _save_result(self, inv_type: str, target: str, result: ModuleResult) -> int:
         ts = now_iso()
         ref = "TP-" + datetime.now().strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:6].upper()
         with self._lock:

@@ -52,8 +52,12 @@ if (-not (Test-Path $vpy)) {
 }
 
 # verify deps quickly; reinstall if a module is missing
-& $vpy -c "import rich, requests, dns, phonenumbers" 2>$null
-if ($LASTEXITCODE -ne 0) {
+# (Windows PowerShell 5.1 turns native stderr into a terminating error under "Stop", so relax it for this probe.)
+$prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+& $vpy -c "import rich, requests, dns, phonenumbers" 2>&1 | Out-Null
+$depsExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($depsExit -ne 0) {
     Warn "Dependencies missing or broken - reinstalling..."
     & $vpy -m pip install -r (Join-Path $Root "requirements.txt") --quiet
     if ($LASTEXITCODE -ne 0) { Die "Dependency reinstall failed." }

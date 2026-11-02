@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -42,10 +43,24 @@ ACTIONS = [
 
 
 # ------------------------------------------------------------------ helpers
+_ai_cache: tuple[float, tuple] | None = None
+AI_STATUS_TTL = 30.0
+
+
+def _header_ai_status() -> tuple[bool, list[str], str]:
+    """Ollama status for the banner only, cached: an offline probe costs ~2 s on Windows and
+    the banner is redrawn after every action. Other screens still query live."""
+    global _ai_cache
+    now = time.monotonic()
+    if _ai_cache is None or now - _ai_cache[0] > AI_STATUS_TTL:
+        _ai_cache = (now, ai.status())
+    return _ai_cache[1]
+
+
 def header():
     console.clear()
     console.print(BANNER)
-    ok, models, _ = ai.status()
+    ok, models, _ = _header_ai_status()
     s = get_db().stats()
     bar = Text("  ", style="tp.dim")
     bar.append(f"v{VERSION}", style="tp.muted")
@@ -117,6 +132,9 @@ def run_and_show(inv_type: str, target: str, **kwargs):
     with console.status(f"[tp.accent]Investigating[/tp.accent] {target} …", spinner="dots"):
         try:
             result, inv_id = investigation.run(inv_type, target, authorized=True, **kwargs)
+        except KeyboardInterrupt:
+            console.print("[tp.warn]Investigation interrupted - nothing was saved.[/tp.warn]")
+            return
         except Exception as e:
             console.print(Panel(f"{type(e).__name__}: {e}", title="[tp.err]ERROR[/tp.err]", border_style="tp.err"))
             return
@@ -537,6 +555,22 @@ EXAMPLES = {"email": "you@example.com", "phone": "+1 415 555 2671", "username": 
             "security": "suspicious-domain.xyz"}
 
 
+def _run_choice(choice: str):
+    module = next((k for n, k, _ in MENU if n == choice), None)
+    if module:
+        console.print(Rule(f"[tp.head]{SPECS[module].label}[/tp.head]  [tp.dim]{SPECS[module].description}[/tp.dim]",
+                           style="tp.rule"))
+        prompt = "Full name" if module == "name" else "Phone number" if module == "phone" else "Target"
+        target = ask(prompt, EXAMPLES.get(module, ""))
+        if module == "name" and target:
+            _run_name_query(target)
+        else:
+            run_and_show(module, target)
+    else:
+        action = next(k for n, k, _ in ACTIONS if n == choice)
+        DISPATCH[action]()
+
+
 def main():
     valid = {n for n, *_ in MENU} | {n for n, *_ in ACTIONS}
     while True:
@@ -547,19 +581,12 @@ def main():
             console.print("[tp.warn]Unknown option.[/tp.warn]"); console.input("[tp.dim]Enter…[/tp.dim]"); continue
         if choice == "0":
             console.print("[tp.dim]Goodbye.[/tp.dim]"); break
-        module = next((k for n, k, _ in MENU if n == choice), None)
-        if module:
-            console.print(Rule(f"[tp.head]{SPECS[module].label}[/tp.head]  [tp.dim]{SPECS[module].description}[/tp.dim]",
-                               style="tp.rule"))
-            prompt = "Full name" if module == "name" else "Phone number" if module == "phone" else "Target"
-            target = ask(prompt, EXAMPLES.get(module, ""))
-            if module == "name" and target:
-                _run_name_query(target)
-            else:
-                run_and_show(module, target)
-        else:
-            action = next(k for n, k, _ in ACTIONS if n == choice)
-            DISPATCH[action]()
+        try:
+            _run_choice(choice)
+        except (KeyboardInterrupt, EOFError):
+            raise
+        except Exception as e:  # a failing screen (e.g. report write error) must not end the session
+            console.print(Panel(f"{type(e).__name__}: {e}", title="[tp.err]ERROR[/tp.err]", border_style="tp.err"))
         console.input("\n[tp.dim]Press Enter to return to the menu…[/tp.dim]")
 
 

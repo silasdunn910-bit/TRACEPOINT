@@ -53,7 +53,7 @@ def robots_allows(url: str) -> bool | None:
     p = urlparse(url)
     rp = robotparser.RobotFileParser()
     try:
-        r = http.get(f"{p.scheme}://{p.netloc}/robots.txt", timeout=6)
+        r = http.get(f"{p.scheme}://{p.netloc}/robots.txt", timeout=6, public_only=True)
         if r.status_code >= 400:
             return True
         rp.parse(r.text.splitlines())
@@ -88,7 +88,7 @@ def investigate(target: str, *, compare_username: bool = True) -> ModuleResult:
                             "robots.txt.", "robots.txt", VERIFIED, "access", "disallowed", url))
         else:
             try:
-                r = http.get(url, timeout=12, max_bytes=3_000_000)
+                r = http.get(url, timeout=12, max_bytes=3_000_000, public_only=True)
                 res.source(platform + " public page", url, "ok" if r.status_code < 400 else "error", f"HTTP {r.status_code}")
                 if r.status_code == 404:
                     res.add(Finding("Profile page not found", "The page returned HTTP 404.", platform, VERIFIED,
