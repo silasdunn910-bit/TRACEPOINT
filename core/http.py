@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 import requests
@@ -19,6 +21,7 @@ _MIN_INTERVAL = 0.35  # seconds between requests to the same host
 _last: dict[str, float] = {}
 _lock = threading.Lock()
 MAX_BYTES = 5_000_000
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 class HttpError(Exception):
@@ -34,28 +37,62 @@ def _throttle(url: str):
         time.sleep(wait)
 
 
+def _retry_delay(response, attempt: int) -> float:
+    """Use Retry-After when present, otherwise short bounded exponential backoff."""
+    value = response.headers.get("Retry-After", "") if response is not None else ""
+    try:
+        return min(8.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        if value:
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return min(8.0, max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds()))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return min(4.0, 0.5 * (2 ** attempt))
+
+
 def request(method: str, url: str, *, timeout: float = DEFAULT_TIMEOUT, headers: dict | None = None,
             params: dict | None = None, json: dict | list | None = None, data=None,
-            allow_redirects: bool = True, max_bytes: int = MAX_BYTES) -> requests.Response:
-    _throttle(url)
-    try:
-        r = _session.request(method, url, timeout=timeout, headers=headers, params=params, json=json,
-                             data=data, allow_redirects=allow_redirects, stream=True)
-        content = b""
-        for chunk in r.iter_content(65536):
-            content += chunk
-            if len(content) > max_bytes:
-                r.close()
-                raise HttpError(f"Response from {urlparse(url).netloc} exceeded {max_bytes} bytes")
-        r._content = content
-        log.info("%s %s -> %s", method, urlparse(url).netloc + urlparse(url).path, r.status_code)
-        return r
-    except requests.Timeout:
-        raise HttpError(f"Timed out contacting {urlparse(url).netloc}")
-    except requests.ConnectionError as e:
-        raise HttpError(f"Could not connect to {urlparse(url).netloc}: {type(e).__name__}")
-    except requests.RequestException as e:
-        raise HttpError(f"Request to {urlparse(url).netloc} failed: {type(e).__name__}")
+            allow_redirects: bool = True, max_bytes: int = MAX_BYTES, retries: int = 0) -> requests.Response:
+    """Make a bounded request with optional retries for transient network/API failures."""
+    host = urlparse(url).netloc
+    attempts = max(0, min(int(retries), 3)) + 1
+    for attempt in range(attempts):
+        _throttle(url)
+        response = None
+        try:
+            response = _session.request(method, url, timeout=timeout, headers=headers, params=params, json=json,
+                                        data=data, allow_redirects=allow_redirects, stream=True)
+            if response.status_code in _RETRYABLE_STATUS and attempt + 1 < attempts:
+                delay = _retry_delay(response, attempt)
+                response.close()
+                time.sleep(delay)
+                continue
+            content = bytearray()
+            for chunk in response.iter_content(65536):
+                content.extend(chunk)
+                if len(content) > max_bytes:
+                    response.close()
+                    raise HttpError(f"Response from {host} exceeded {max_bytes} bytes")
+            response._content = bytes(content)
+            log.info("%s %s -> %s", method, host + urlparse(url).path, response.status_code)
+            return response
+        except requests.Timeout:
+            if attempt + 1 < attempts:
+                time.sleep(_retry_delay(None, attempt))
+                continue
+            raise HttpError(f"Timed out contacting {host}")
+        except requests.ConnectionError as e:
+            if attempt + 1 < attempts:
+                time.sleep(_retry_delay(None, attempt))
+                continue
+            raise HttpError(f"Could not connect to {host}: {type(e).__name__}")
+        except requests.RequestException as e:
+            raise HttpError(f"Request to {host} failed: {type(e).__name__}")
+    raise HttpError(f"Request to {host} did not complete")
 
 
 def get(url: str, **kw) -> requests.Response:

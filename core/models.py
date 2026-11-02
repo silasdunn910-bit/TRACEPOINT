@@ -12,18 +12,29 @@ from datetime import datetime, timezone
 # Confidence classifications. These are qualitative evidence grades,
 # NOT calibrated probabilities.
 VERIFIED = "VERIFIED"      # directly supported by a reliable primary source
-STRONG = "STRONG"          # multiple independent credible sources agree
+CORROBORATED = "CORROBORATED"  # supported by multiple independent sources
+STRONG = CORROBORATED      # legacy alias: older records stored "STRONG"
 MODERATE = "MODERATE"      # limited but consistent evidence
 LOW = "LOW"                # weak association / incomplete evidence
 UNVERIFIED = "UNVERIFIED"  # not independently confirmed
-CONFIDENCE_LEVELS = [VERIFIED, STRONG, MODERATE, LOW, UNVERIFIED]
+INCONCLUSIVE = "INCONCLUSIVE"  # the source could not establish the result
+CONFIDENCE_LEVELS = [VERIFIED, CORROBORATED, MODERATE, LOW, UNVERIFIED, INCONCLUSIVE]
+
+
+def normalize_confidence(value: str) -> str:
+    """Map legacy stored grades (STRONG) onto the current taxonomy; unknown -> UNVERIFIED."""
+    v = (value or "").upper()
+    if v == "STRONG":
+        return CORROBORATED
+    return v if v in CONFIDENCE_LEVELS else UNVERIFIED
 
 CONFIDENCE_MEANING = {
     VERIFIED: "Directly supported by a reliable primary source.",
-    STRONG: "Supported by multiple independent, credible sources.",
+    CORROBORATED: "Supported by multiple independent, credible sources.",
     MODERATE: "Supported by limited but consistent evidence.",
     LOW: "Weak association or incomplete evidence.",
     UNVERIFIED: "Not independently confirmed.",
+    INCONCLUSIVE: "The source could not establish the result (blocked, unavailable or ambiguous).",
 }
 
 # Entity types

@@ -103,6 +103,15 @@ def run_and_show(inv_type: str, target: str, **kwargs):
     if not authorize(inv_type):
         console.print("[tp.dim]Cancelled — authorization not given.[/tp.dim]")
         return
+    if inv_type == "phone" and "default_region" not in kwargs:
+        from modules.phone_intel import normalize_phone_input
+        try:
+            normalized_phone = normalize_phone_input(target)
+        except ValueError:
+            normalized_phone = ""
+        if not normalized_phone.startswith("+"):
+            region = ask("Numbering region for this national-format number (ISO country code)", "US")
+            kwargs["default_region"] = (region or "US").upper()
     result: ModuleResult | None = None
     inv_id = None
     with console.status(f"[tp.accent]Investigating[/tp.accent] {target} …", spinner="dots"):
@@ -272,7 +281,13 @@ def relationship_explorer():
 
     # --- Mode A: cross-investigation correlation (entities in 2+ investigations) ---
     console.print("[tp.head]A · SHARED ENTITIES[/tp.head] [tp.dim]— appear in two or more investigations[/tp.dim]")
-    shared = correlation.shared_entities(2)
+    all_shared = correlation.shared_entities(2)
+    shared = [e for e in all_shared if not e["generic"]]
+    generic = [e for e in all_shared if e["generic"]]
+    if generic:
+        console.print(f"[tp.dim]  {len(generic)} shared generic infrastructure entit{'y' if len(generic) == 1 else 'ies'} "
+                      f"hidden (e.g. {generic[0]['value'][:40]}): using the same mail/DNS/hosting provider does not "
+                      "connect two subjects.[/tp.dim]")
     if shared:
         t = Table(box=None, title_style="tp.head")
         t.add_column("Type", style="tp.accent2"); t.add_column("Value", style="tp.val")
@@ -402,7 +417,7 @@ def reports_menu():
         t = Table(box=None); t.add_column("Ref", style="tp.accent2"); t.add_column("Target", style="tp.val")
         t.add_column("Format", width=6); t.add_column("Path", style="tp.dim")
         for r in rows[:30]:
-            t.add_row(r["ref"], r["target"][:34], r["format"], r["path"])
+            t.add_row(r["ref"], r["target"][:34], r["format"], r["path"] + ("" if r["exists"] else " [missing]"))
         console.print(t)
     else:
         console.print("[tp.dim]No reports generated yet.[/tp.dim]")
@@ -417,38 +432,59 @@ def reports_menu():
 
 
 def api_config():
+    from core import credentials, search_engine
+    from providers.search_providers import ALL_PROVIDERS
+    search_by_key = {k: pr for pr in ALL_PROVIDERS for k in pr.secret_keys}
     while True:
         console.print(Rule("[tp.head]API CONFIGURATION[/tp.head]", style="tp.rule"))
         console.print(f"[tp.dim]Credentials are stored with {encryption_mode()} and never printed in full. "
-                      "All integrations are optional.[/tp.dim]\n")
+                      "All integrations are optional. CONFIGURED means stored, not verified: "
+                      "use 't' to run a connection test.[/tp.dim]\n")
         names = db.secret_names()
         t = Table(box=None, expand=True)
         t.add_column("#", style="tp.key", width=3); t.add_column("Integration", style="tp.val")
-        t.add_column("Category", width=12, style="tp.accent2"); t.add_column("Status", width=18)
+        t.add_column("Category", width=12, style="tp.accent2"); t.add_column("Status", width=22)
         t.add_column("Value", style="tp.dim")
         keys = list(API_INTEGRATIONS)
         for i, k in enumerate(keys, 1):
             label, cat, _ = API_INTEGRATIONS[k]
-            configured = k in names
-            t.add_row(str(i), label, cat,
-                      Text("● configured", style="tp.ok") if configured else Text("not set", style="tp.muted"),
-                      mask(db.get_secret(k)) if configured else "")
+            if k not in names:
+                status = Text("not set", style="tp.muted")
+            elif k in search_by_key:
+                st, _d = search_engine.provider_status(search_by_key[k])
+                style = {"CONNECTED": "tp.ok", "CONFIGURED": "tp.warn"}.get(st, "tp.err")
+                status = Text(f"● {st}", style=style)
+            else:
+                status = Text("● CONFIGURED (no test available)", style="tp.warn")
+            t.add_row(str(i), label, cat, status, mask(db.get_secret(k)) if k in names else "")
         console.print(t)
-        sel = ask("Number to set/update, 'd N' to delete, blank to return")
+        sel = ask("Number to set/update, 'd N' to delete, 't' to test search providers, blank to return")
         if not sel:
             return
+        if sel.lower() == "t":
+            for pr in ALL_PROVIDERS:
+                if pr.requires_key and pr.configured():
+                    with console.status(f"Testing {pr.name}…"):
+                        res = search_engine.check_provider(pr)
+                    style = "tp.ok" if res.status == "CONNECTED" else "tp.err"
+                    console.print(f"[{style}]{pr.name}: {res.status}[/{style}] [tp.dim]{res.detail}[/tp.dim]")
+            if not any(pr.requires_key and pr.configured() for pr in ALL_PROVIDERS):
+                console.print("[tp.warn]No search provider is configured; nothing to test.[/tp.warn]")
+            continue
         delete = sel.lower().startswith("d")
         num = sel[1:].strip() if delete else sel
         if not num.isdigit() or not (1 <= int(num) <= len(keys)):
             console.print("[tp.warn]Invalid selection.[/tp.warn]"); continue
         key = keys[int(num) - 1]
         if delete:
-            db.delete_secret(key); console.print(f"[tp.ok]✓ Removed {API_INTEGRATIONS[key][0]}.[/tp.ok]")
+            ok, msg = credentials.remove_credential(
+                db, key, lambda: Confirm.ask(f"[tp.err]Delete the stored {API_INTEGRATIONS[key][0]}?[/tp.err]",
+                                             default=False, console=console))
         else:
             console.print(f"[tp.dim]{API_INTEGRATIONS[key][2]}[/tp.dim]")
-            val = Prompt.ask(f"Value for {API_INTEGRATIONS[key][0]}", password=True, console=console).strip()
-            if val:
-                db.set_secret(key, val); console.print("[tp.ok]✓ Stored (encrypted).[/tp.ok]")
+            val = Prompt.ask(f"Value for {API_INTEGRATIONS[key][0]}", password=(key != "searxng_url"), console=console)
+            ok, msg = credentials.save_credential(db, key, val)
+        console.print(f"[{'tp.ok' if ok else 'tp.warn'}]{'✓ ' if ok else ''}{msg}[/{'tp.ok' if ok else 'tp.warn'}]")
 
 
 def settings():
@@ -515,7 +551,8 @@ def main():
         if module:
             console.print(Rule(f"[tp.head]{SPECS[module].label}[/tp.head]  [tp.dim]{SPECS[module].description}[/tp.dim]",
                                style="tp.rule"))
-            target = ask("Full name" if module == "name" else "Target", EXAMPLES.get(module, ""))
+            prompt = "Full name" if module == "name" else "Phone number" if module == "phone" else "Target"
+            target = ask(prompt, EXAMPLES.get(module, ""))
             if module == "name" and target:
                 _run_name_query(target)
             else:

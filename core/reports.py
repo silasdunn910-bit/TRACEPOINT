@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from core import correlation
 from core.configuration import APP_NAME, REPORTS_DIR, VERSION
 from core.database import get_db
-from core.models import CONFIDENCE_LEVELS, CONFIDENCE_MEANING, now_iso
+from core.models import CONFIDENCE_LEVELS, CONFIDENCE_MEANING, normalize_confidence, now_iso
 
 STANDING_LIMITS = [
     "Findings reflect public sources at collection time and may since have changed.",
@@ -31,9 +31,10 @@ def build(inv_id: int) -> dict:
     sources = [dict(s) for s in db.sources(inv_id)]
     ents = [dict(e) for e in db.entities_for(inv_id)]
     rels = [dict(r) for r in db.relationships_for(inv_id)]
-    counts = Counter(f["confidence"] for f in findings)
+    counts = Counter(normalize_confidence(f["confidence"]) for f in findings)
     contra = correlation.contradictions(inv_id)
     errors = [s for s in sources if s["status"] == "error"]
+    blocked = [s for s in sources if s["status"] == "blocked"]
     not_cfg = [s for s in sources if s["status"] == "not_configured"]
     ok_sources = {s["name"] for s in sources if s["status"] == "ok"}
     if findings:
@@ -45,6 +46,8 @@ def build(inv_id: int) -> dict:
         conclusion += f"{len(contra)} contradiction(s) need review. "
     if errors:
         conclusion += f"{len(errors)} source(s) failed; coverage is incomplete. "
+    if blocked:
+        conclusion += f"{len(blocked)} source(s) blocked automated checks; results there are inconclusive. "
     conclusion += "No identity attribution is made by this report."
     return {
         "report_generated": now_iso(), "generator": f"{APP_NAME} {VERSION}",
@@ -54,6 +57,7 @@ def build(inv_id: int) -> dict:
         "confidence_definitions": CONFIDENCE_MEANING, "related_entities": ents, "relationships": rels,
         "geographic_evidence": [f for f in findings if f["category"] == "geo"], "contradictions": contra,
         "limitations": STANDING_LIMITS + [f"Source failed: {s['name']} — {s['detail']}" for s in errors]
+        + [f"Source blocked automated checks: {s['name']} — {s['detail']}" for s in blocked]
                        + [f"Not configured: {s['name']}" for s in not_cfg],
         "conclusion": conclusion, "ai_analysis": inv["ai_summary"] or "",
     }
@@ -115,7 +119,7 @@ def safe_href(url: str) -> str:
 def to_html(r: dict) -> str:
     esc = html.escape
     inv = r["investigation"]
-    color = {"VERIFIED": "#22d3ee", "STRONG": "#60a5fa", "MODERATE": "#a78bfa", "LOW": "#fbbf24", "UNVERIFIED": "#94a3b8"}
+    color = {"VERIFIED": "#22d3ee", "CORROBORATED": "#60a5fa", "STRONG": "#60a5fa", "MODERATE": "#a78bfa", "LOW": "#fbbf24", "UNVERIFIED": "#94a3b8", "INCONCLUSIVE": "#f97316"}
 
     def anchor(u):
         href = safe_href(u)
@@ -170,7 +174,7 @@ td{{border-top:1px solid #16212e;padding:10px 8px;vertical-align:top}}
 .ev{{white-space:pre-wrap;background:#0f1721;border:1px solid #16212e;border-radius:6px;padding:7px;margin-top:6px;color:#9fb3c8;font:12px ui-monospace,monospace}}
 .lim{{color:#d6a94a;margin-top:6px;font-size:12px}}
 .muted{{color:#5b6b7d}} ul{{margin:0;padding-left:18px}} li{{margin:3px 0}}
-.st-error{{color:#f08a8a}} .st-not_configured{{color:#8ba0b6}}
+.st-error{{color:#f08a8a}} .st-blocked{{color:#fbbf24}} .st-not_configured{{color:#8ba0b6}}
 pre.ai{{white-space:pre-wrap;background:#0f1721;border:1px solid #1e2a38;border-radius:8px;padding:14px;color:#cfe0f0}}
 .concl{{background:#0f1721;border:1px solid #1e2a38;border-radius:8px;padding:14px;color:#eaf2fb}}
 footer{{margin-top:30px;border-top:1px solid #1e2a38;padding-top:14px;color:#5b6b7d;font-size:12px}}
@@ -199,5 +203,5 @@ def save(inv_id: int, fmt: str) -> Path:
     body = {"txt": to_txt, "json": to_json, "html": to_html}[fmt](r)
     path = REPORTS_DIR / f"{ref}.{fmt}"
     path.write_text(body, encoding="utf-8")
-    get_db().add_report(inv_id, fmt, str(path))
+    get_db().add_report(inv_id, fmt, path.name)  # relative to REPORTS_DIR so the folder can move
     return path

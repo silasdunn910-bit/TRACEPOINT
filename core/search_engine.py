@@ -6,12 +6,15 @@ source records instead of crashing.
 """
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, urlunparse
 
+from core.database import get_db
 from core.http import HttpError
 from core.models import LOW, UNVERIFIED, Finding, ModuleResult
-from providers.search_providers import ALL_PROVIDERS, ProviderUnavailable, SearchResult
+from providers.search_providers import (ALL_PROVIDERS, ST_CONFIGURED, ConnectionResult, ProviderUnavailable,
+                                        SearchResult)
 
 _TRACKING = ("utm_", "fbclid", "gclid", "ref=")
 
@@ -27,28 +30,61 @@ def active_providers() -> list:
     return [p for p in ALL_PROVIDERS if p.configured()]
 
 
-def search(query: str, limit: int = 10, result: ModuleResult | None = None) -> list[SearchResult]:
-    """Run a query across all configured providers. Provider status is written into `result.sources`."""
-    providers = active_providers()
-    # DuckDuckGo is the free fallback: only use it when no keyed provider is configured
-    keyed = [p for p in providers if p.requires_key]
-    if keyed:
-        providers = keyed
-    merged: dict[str, SearchResult] = {}
+class SearchResults(list):
+    """List of SearchResult plus how the search actually went.
 
-    def run(p):
+    completed      True only if at least one provider answered successfully. An empty list with
+                   completed=True is a genuine "zero results"; completed=False means the search never ran.
+    attempts       one dict per provider tried: name, ok, kind, error, count
+    fallback_used  True if DuckDuckGo was used because every configured provider failed
+    """
+    completed: bool = True
+    fallback_used: bool = False
+
+    def __init__(self, rows=(), completed=True, attempts=None, fallback_used=False):
+        super().__init__(rows)
+        self.completed = completed
+        self.attempts = attempts or []
+        self.fallback_used = fallback_used
+
+
+def _run(providers, query, limit):
+    def one(p):
         try:
-            return p, p.search(query, limit), None
-        except (ProviderUnavailable, HttpError) as e:
-            return p, [], str(e)
+            return p, p.search(query, limit), "", ""
+        except ProviderUnavailable as e:
+            return p, [], getattr(e, "kind", "UNAVAILABLE"), str(e)
+        except HttpError as e:
+            return p, [], "UNAVAILABLE", str(e)
         except Exception as e:  # provider parsing bug must not kill the investigation
-            return p, [], f"{type(e).__name__}: {e}"
+            return p, [], "INVALID_RESPONSE", f"{p.name}: unexpected {type(e).__name__}"
 
     with ThreadPoolExecutor(max_workers=4) as ex:
-        for p, rows, err in ex.map(run, providers):
+        return list(ex.map(one, providers))
+
+
+def search(query: str, limit: int = 10, result: ModuleResult | None = None) -> SearchResults:
+    """Run a query. Order: configured keyed providers; only if ALL of them fail, DuckDuckGo as an explicit,
+    labelled fallback. With no keyed provider configured, DuckDuckGo is the default. Provider status is
+    written into `result.sources`; every result keeps the name of the provider that returned it."""
+    providers = active_providers()
+    keyed = [p for p in providers if p.requires_key]
+    free = [p for p in providers if not p.requires_key]
+    primary, fallback = (keyed, free) if keyed else (free, [])
+    merged: dict[str, SearchResult] = {}
+    attempts: list[dict] = []
+
+    def process(outcomes, note=""):
+        ok_any = False
+        for p, rows, kind, err in outcomes:
+            ok = not err
+            ok_any = ok_any or ok
+            attempts.append({"name": p.name, "ok": ok, "kind": kind, "error": err, "count": len(rows)})
             if result is not None:
-                result.source(p.name, "", "error" if err else "ok", err or f'query: {query} ({len(rows)} results)')
-                if err:
+                if ok:
+                    result.source(p.name, "", "ok", f"query: {query} ({len(rows)} results){note}")
+                else:
+                    result.source(p.name, "", "error", f"[{kind}] {err}{note}")
                     result.errors.append(f"{p.name}: {err}")
             for r in rows:
                 if not isinstance(r, SearchResult):
@@ -69,7 +105,70 @@ def search(query: str, limit: int = 10, result: ModuleResult | None = None) -> l
                         merged[key].provider += f", {p.name}"
                 else:
                     merged[key] = r
-    return list(merged.values())
+        return ok_any
+
+    completed = process(_run(primary, query, limit)) if primary else False
+    fallback_used = False
+    if not completed and fallback:
+        fallback_used = True
+        completed = process(_run(fallback, query, limit), " [fallback: all configured providers failed]")
+    if not completed and result is not None:
+        result.errors.append(f"Web search did not run successfully for {query!r}: no provider answered. "
+                             "This is not a 'no results' outcome.")
+    return SearchResults(merged.values(), completed, attempts, fallback_used)
+
+
+# --- credential / connection status ------------------------------------------
+_CONN_PREFIX = "conn:"
+
+
+def _slug(p) -> str:
+    return _CONN_PREFIX + p.name
+
+
+def check_provider(p) -> ConnectionResult:
+    """Run one live connection test and persist the outcome (never stores credentials)."""
+    res = p.test_connection()
+    get_db().set_setting(_slug(p), json.dumps({"status": res.status, "detail": res.detail, "kind": res.kind,
+                                               "tested_at": res.tested_at}))
+    return res
+
+
+def clear_test_results(secret_key: str) -> None:
+    """Forget stored connection results for providers that use this credential (it changed or was removed)."""
+    for p in ALL_PROVIDERS:
+        if secret_key in getattr(p, "secret_keys", ()):
+            get_db().set_setting(_slug(p), "")
+
+
+def provider_status(p) -> tuple[str, str]:
+    """(status, detail). CONNECTED/INVALID/... only if a test ran after the credentials were last saved;
+    otherwise CONFIGURED (stored but untested). Unconfigured providers return ('NOT SET', '')."""
+    if not p.configured():
+        return "NOT SET", ""
+    db = get_db()
+    raw = db.get_setting(_slug(p), "")
+    if not raw:
+        return ST_CONFIGURED, "stored, not tested"
+    try:
+        d = json.loads(raw)
+        tested = str(d["tested_at"])
+        status = str(d["status"])
+    except (ValueError, KeyError, TypeError):
+        return ST_CONFIGURED, "stored, not tested"
+    names = db.secret_names()
+    newest = max((names.get(k, "") for k in p.secret_keys), default="")
+    if newest and tested < newest:
+        return ST_CONFIGURED, "credentials changed since last test"
+    return status, f"{d.get('detail', '')} (tested {tested})"
+
+
+def note_zero_results(hits, result: ModuleResult, what: str) -> None:
+    """Record a successfully completed search that found nothing. A search that never ran is already recorded
+    as an error by search(), so no 'no results' note is written for it."""
+    if getattr(hits, "completed", True) and not hits:
+        result.notes.append(f"Search for {what} completed with zero results; this does not show that no public "
+                            "references exist.")
 
 
 def results_to_findings(results: list[SearchResult], result: ModuleResult, *, category: str, exact_term: str,

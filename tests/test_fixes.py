@@ -145,7 +145,7 @@ class _FakeResponse:
         return self._payload
 
 
-def test_username_challenge_page_is_inconclusive():
+def test_username_challenge_page_is_blocked_not_absent():
     from modules import username_intel
 
     orig_get = username_intel.http.get
@@ -154,7 +154,7 @@ def test_username_challenge_page_is_inconclusive():
             200, "<html><head><title>Client Challenge</title></head><body>cf-chl</body></html>")
         site = next(s for s in username_intel.SITES if s.name == "PyPI")
         out = username_intel.check_site(site, "some_user")
-        assert out["state"] == "inconclusive", out
+        assert out["state"] == "blocked", out
         assert "challenge" in out["detail"].lower()
     finally:
         username_intel.http.get = orig_get

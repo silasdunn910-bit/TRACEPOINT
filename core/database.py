@@ -247,7 +247,7 @@ class Database:
         return rows[0] if rows else None
 
     def findings(self, inv_id: int) -> list[sqlite3.Row]:
-        order = "CASE confidence WHEN 'VERIFIED' THEN 0 WHEN 'STRONG' THEN 1 WHEN 'MODERATE' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END"
+        order = "CASE confidence WHEN 'VERIFIED' THEN 0 WHEN 'STRONG' THEN 1 WHEN 'CORROBORATED' THEN 1 WHEN 'MODERATE' THEN 2 WHEN 'LOW' THEN 3 WHEN 'UNVERIFIED' THEN 4 ELSE 5 END"
         return self.q(f"SELECT * FROM findings WHERE investigation_id=? ORDER BY category, {order}, id", (inv_id,))
 
     def sources(self, inv_id: int) -> list[sqlite3.Row]:
@@ -280,9 +280,24 @@ class Database:
                               (inv_id, fmt, path, now_iso()))
             self.conn.commit()
 
-    def reports(self) -> list[sqlite3.Row]:
-        return self.q("""SELECT r.*, i.ref, i.target FROM reports r JOIN investigations i ON i.id=r.investigation_id
+    def reports(self) -> list[dict]:
+        """Report rows with `path` resolved against the current REPORTS_DIR.
+
+        Older rows stored absolute paths from a previous install location; only the
+        file name is trusted, so they resolve correctly. Stored rows are not modified.
+        `exists` tells the UI whether the file is actually on disk.
+        """
+        from pathlib import PureWindowsPath
+        from core.configuration import REPORTS_DIR
+        rows = self.q("""SELECT r.*, i.ref, i.target FROM reports r JOIN investigations i ON i.id=r.investigation_id
                          ORDER BY r.id DESC LIMIT 100""")
+        out = []
+        for r in rows:
+            d = dict(r)
+            p = REPORTS_DIR / PureWindowsPath(d["path"]).name
+            d["path"], d["exists"] = str(p), p.is_file()
+            out.append(d)
+        return out
 
     def search_history(self, limit: int = 30) -> list[sqlite3.Row]:
         return self.q("SELECT * FROM search_history ORDER BY id DESC LIMIT ?", (limit,))

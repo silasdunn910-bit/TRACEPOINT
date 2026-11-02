@@ -34,6 +34,13 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 **Requirements:** Windows 10/11, Python 3.10+ (`python` on PATH). No Docker, no admin rights, no manually opened second terminal. Ollama is optional.
 
+**Run the tests (developers):**
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q      # offline; no live services are contacted
+```
+
 ---
 
 ## The menu
@@ -41,7 +48,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | # | Module | What it does | Needs authorization |
 |---|--------|--------------|:---:|
 | 1 | **Email** | Syntax, domain, disposable/free classification, MX, SPF, DKIM, DMARC, RDAP, public Gravatar profile, optional breach-name check (HIBP), public references | ✔ |
-| 2 | **Phone** | E.164 normalization, country/region, number type, allocated carrier, numbering-plan area, public listings | ✔ |
+| 2 | **Phone** | Normalizes common input formats and validates numbering-plan metadata with libphonenumber; optional configured-provider public references | ✔ |
 | 3 | **Username** | Checks ~25 platforms (official/public APIs) for a public profile with that exact handle, cross-platform field comparison, impersonation/duplicate notes | ✔ |
 | 4 | **Domain** | RDAP, full DNS, SPF/DKIM/DMARC, certificate-transparency hostnames, Wayback history, reputation | — |
 | 5 | **IP** | Validation, RDAP network owner, ASN/ISP, reverse DNS, hosting/proxy classification, geolocation (2 providers, cross-checked), reputation | — |
@@ -66,15 +73,22 @@ them to a candidate. Matching names alone never create that assignment.
 
 ---
 
+Phone metadata does not establish that a number is active, reachable, or owned by a person. Region and time-zone details
+describe numbering-plan allocation only. For national-format input, the app asks for the numbering region (default `US`);
+international numbers with a leading `+` use their country calling code. Public web-reference searches use configured Brave Search, Google Programmable
+Search, or SearXNG APIs; when none is configured, phone search reports that fact and does not fall back to DuckDuckGo
+HTML scraping. Search results are leads and retain source URLs and retrieval times.
+
 ## Confidence grades
 
 Every finding carries a qualitative grade — **not** a statistical probability:
 
 - **VERIFIED** — directly supported by a reliable primary source (e.g. a DNS record, an RDAP event).
-- **STRONG** — multiple independent, credible sources agree.
+- **CORROBORATED** — supported by multiple independent sources (older records stored as `STRONG` are shown as CORROBORATED).
 - **MODERATE** — limited but consistent evidence.
 - **LOW** — weak association or incomplete evidence (e.g. a search hit containing the term).
 - **UNVERIFIED** — not independently confirmed.
+- **INCONCLUSIVE** — the source could not establish the result (blocked, rate-limited, unavailable). An HTTP 403/429 or an anti-bot page is never read as "account not found".
 
 Each finding also records its source, source URL, discovery time, supporting evidence, and **limitations**. Matching handles/names are never treated as proof of common ownership; IP/phone geography is labeled as network/numbering-plan data, never a person's location.
 
@@ -92,6 +106,15 @@ Set these in **API Configuration** (menu 13). TRACEPOINT is fully useful **witho
 | Have I Been Pwned | Breach **names** for an email (never credentials) |
 | OpenCorporates | Public company-officer records |
 
+**Search provider setup (needed for Name Intelligence):** configure at least one of
+- *Brave Search*: API key,
+- *Google Programmable Search*: API key **and** search engine ID (`cx`),
+- *SearXNG*: instance base URL, `http://` or `https://` only, with JSON output enabled (`search.formats` includes `json`).
+
+**Status labels in API Configuration.** `CONFIGURED` only means a credential is stored. Press `t` to run one live connection test per search provider; only then does the status become `CONNECTED`, `INVALID CREDENTIALS`, `RATE LIMITED` or `UNAVAILABLE`. A changed credential resets the status to `CONFIGURED`. Other integrations (IPinfo, AbuseIPDB, VirusTotal, HIBP, OpenCorporates) have no connection test yet and show `CONFIGURED (no test available)`.
+
+**Search order.** Configured providers are tried first. DuckDuckGo is used only if none is configured, or as a labelled fallback when every configured provider fails. A search that never ran is reported as an error, never as "no results".
+
 Keys are encrypted at rest with **Windows DPAPI** (scoped to your Windows user); they are never printed in full, never written to logs, and `config/.env` / the database are git-ignored. On non-Windows dev machines a clearly-labeled base64 fallback is used and the app says so.
 
 ---
@@ -104,7 +127,7 @@ Install [Ollama](https://ollama.com), then e.g.:
 ollama pull qwen2.5-coder:7b
 ```
 
-Open any investigation → **ai**. The model receives **only the stored findings** and is instructed to cite finding numbers, separate facts from inferences and unknowns, and never invent sources or locations. It never downloads models itself. If Ollama is offline, everything else still works.
+Open any investigation → **ai**. The model receives **only the stored findings** and is instructed to cite finding numbers, separate facts from inferences and unknowns, and never invent sources or locations. It never downloads models itself. If Ollama is offline, everything else still works. AI text is stored separately from findings, is labelled "local model · unverified" in reports, and is never counted as evidence.
 
 ---
 
@@ -125,6 +148,7 @@ TRACEPOINT/
 
 ## Reports & data
 
+- The reports folder is always `<app folder>\reports` (resolved from the app root, never a hard-coded path). Older history entries that recorded another location are resolved by file name; a missing file is marked `[missing]`.
 - Reports are written to `reports/` as `TP-<date>-<id>.{txt,json,html}`. The HTML report is self-contained (no external assets).
 - All investigations persist in `data/tracepoint.db` and survive restarts; **History** reopens or deletes them.
 - **Settings → backup-db** snapshots the database into `data/backups/` (last 10 kept).

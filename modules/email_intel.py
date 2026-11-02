@@ -149,15 +149,26 @@ def investigate(target: str, *, dkim_selector: str = "", web_search: bool = True
                                 "Have I Been Pwned", VERIFIED, "breach", "0", "https://haveibeenpwned.com",
                                 limitations="Only covers breaches HIBP has loaded."))
             elif r.status_code == 200:
-                for b in r.json():
+                try:
+                    breaches = r.json()
+                    if not isinstance(breaches, list):
+                        raise ValueError
+                except ValueError:
+                    res.errors.append("HIBP returned an unreadable response; breach status is unknown (not 'clean').")
+                    breaches = []
+                for b in breaches:
                     res.add(Finding(f"Breach: {b.get('Title', b.get('Name'))}",
                                     f"Address appears in the {b.get('Name')} breach ({b.get('BreachDate')}).",
                                     "Have I Been Pwned", VERIFIED, "breach", b.get("Name", ""),
                                     f"https://haveibeenpwned.com/PwnedWebsites#{b.get('Name')}",
                                     "Exposed data types: " + ", ".join(b.get("DataClasses", [])),
                                     "TRACEPOINT never retrieves or displays breached data itself."))
+            elif r.status_code == 401:
+                res.errors.append("HIBP rejected the API key (HTTP 401); breach status is unknown (not 'clean').")
+            elif r.status_code == 429:
+                res.errors.append("HIBP rate limit reached (HTTP 429); breach status is unknown (not 'clean').")
             else:
-                res.errors.append(f"HIBP returned HTTP {r.status_code}")
+                res.errors.append(f"HIBP returned HTTP {r.status_code}; breach status is unknown (not 'clean').")
             res.source("Have I Been Pwned", "https://haveibeenpwned.com", "ok" if r.status_code in (200, 404) else "error")
         except HttpError as e:
             res.source("Have I Been Pwned", "", "error", str(e))
@@ -167,6 +178,7 @@ def investigate(target: str, *, dkim_selector: str = "", web_search: bool = True
     # Public indexed references
     if web_search:
         hits = search_engine.search(f'"{norm}"', 10, res)
+        search_engine.note_zero_results(hits, res, "the email address")
         search_engine.results_to_findings(hits, res, category="web-references", exact_term=norm,
                                           what=f'exact query "{norm}"')
         for h in hits:

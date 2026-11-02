@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from core.models import CONFIDENCE_LEVELS, ModuleResult
+from core.models import CONFIDENCE_LEVELS, ModuleResult, normalize_confidence
 from ui.theme import CONF_DOT, CONF_STYLE, STATUS_ICON, STATUS_STYLE
 
 
@@ -47,15 +47,19 @@ def findings_panel(result: ModuleResult) -> Panel:
 def summary_bar(result: ModuleResult) -> Panel:
     counts = {c: 0 for c in CONFIDENCE_LEVELS}
     for f in result.findings:
-        counts[f.confidence] = counts.get(f.confidence, 0) + 1
+        c = normalize_confidence(f.confidence)
+        counts[c] = counts.get(c, 0) + 1
     line = Text()
     for c in CONFIDENCE_LEVELS:
         line.append(f"  {CONF_DOT[c]} {counts[c]} {c}  ", style=CONF_STYLE[c])
     ok = sum(1 for s in result.sources if s.status == "ok")
     err = sum(1 for s in result.sources if s.status == "error")
+    blk = sum(1 for s in result.sources if s.status == "blocked")
     meta = Text(f"\n  sources: {ok} ok", style="tp.ok")
     if err:
         meta.append(f" · {err} failed", style="tp.err")
+    if blk:
+        meta.append(f" · {blk} blocked", style="tp.warn")
     meta.append(f" · {len(result.entities)} entities · {len(result.relationships)} relationships", style="tp.dim")
     return Panel(Group(line, meta), title="[tp.accent]EVIDENCE SUMMARY[/tp.accent]", border_style="tp.rule")
 

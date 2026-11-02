@@ -56,7 +56,24 @@ def valid_result(row: object) -> bool:
         return False
 
 
-def search_name(name: str, context: str = "", *, limit: int = 6, result=None) -> list[tuple[str, SearchResult]]:
+class NameHits(list):
+    """(query_category, SearchResult) pairs plus how the search went, so callers can tell
+    'searched, nothing found' from 'search never ran'."""
+
+    def __init__(self, rows=(), *, configured=True, queries_run=0, queries_completed=0, skipped_queries=0):
+        super().__init__(rows)
+        self.configured = configured
+        self.queries_run = queries_run
+        self.queries_completed = queries_completed
+        self.skipped_queries = skipped_queries
+
+
+MISSING_CONFIG = ("No public search provider is configured. Set at least one in API Configuration: "
+                  "Brave Search API key, OR Google Programmable Search key AND engine ID (cx), "
+                  "OR a SearXNG instance URL.")
+
+
+def search_name(name: str, context: str = "", *, limit: int = 6, result=None) -> NameHits:
     """Search bounded query variants with existing configured providers.
 
     This sends only search API requests through the shared search engine; it does
@@ -65,17 +82,30 @@ def search_name(name: str, context: str = "", *, limit: int = 6, result=None) ->
     configured = search_engine.active_providers()
     if not any(getattr(p, "requires_key", False) for p in configured):
         if result is not None:
-            result.source("Configured public web search", "", "not_configured",
-                          "Configure Brave Search, Google Programmable Search, or SearXNG in API Configuration.")
-        return []
+            result.source("Configured public web search", "", "not_configured", MISSING_CONFIG)
+        return NameHits(configured=False)
     found: dict[str, tuple[str, SearchResult]] = {}
-    for spec in build_queries(name, context):
+    specs = build_queries(name, context)
+    run = completed = consecutive_failures = 0
+    for idx, spec in enumerate(specs):
+        run += 1
         try:
             rows = search_engine.search(spec.query, limit=limit, result=result)
         except Exception as exc:  # one unavailable provider/query does not abort later queries
+            rows = []
+            ok = False
             if result is not None:
                 result.errors.append(f"Name search query failed ({spec.category}): {type(exc).__name__}: {exc}")
-            continue
+        else:
+            ok = getattr(rows, "completed", True)
+        completed += ok
+        consecutive_failures = 0 if ok else consecutive_failures + 1
+        if consecutive_failures >= 2 and not completed:
+            # Providers are consistently failing (bad key, quota...): stop instead of hammering them.
+            if result is not None:
+                result.notes.append(f"{len(specs) - idx - 1} remaining queries skipped after repeated provider failures.")
+            return NameHits(found.values(), queries_run=run, queries_completed=completed,
+                            skipped_queries=len(specs) - idx - 1)
         for row in rows:
             if not valid_result(row):
                 if result is not None:
@@ -85,4 +115,4 @@ def search_name(name: str, context: str = "", *, limit: int = 6, result=None) ->
             # recur across planned queries; retain its first query association.
             key = search_engine.normalize_url(row.url)
             found.setdefault(key, (spec.category, row))
-    return list(found.values())
+    return NameHits(found.values(), queries_run=run, queries_completed=completed)

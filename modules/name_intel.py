@@ -5,7 +5,7 @@ import re
 
 from core.models import LOW, UNVERIFIED, Finding, ModuleResult
 from modules.name_matching import Claim, contradictory_claims, corroborated_claims, name_match_state
-from providers.name_search import search_name
+from providers.name_search import MISSING_CONFIG, search_name
 
 LIMITATIONS = (
     "A matching name or search snippet does not establish identity. Candidates remain separate unless multiple "
@@ -47,8 +47,18 @@ def investigate(name: str, *, context: str = "", claims: list[Claim] | None = No
             published_at=hit.published_at,
         ))
 
-    if not hits:
-        result.notes.append("No valid public search results returned. This does not establish absence of public information.")
+    ran = getattr(hits, "queries_run", 1)
+    done = getattr(hits, "queries_completed", 1)
+    if not getattr(hits, "configured", True):
+        result.errors.append("Name search did not run: " + MISSING_CONFIG)
+    elif ran and not done:
+        result.errors.append("Name search could not be completed: every provider failed for every query attempted. "
+                             "This is NOT a 'no results' outcome; see the provider errors above.")
+    elif not hits:
+        result.notes.append("Search completed with zero valid public results. This does not establish absence of "
+                            "public information.")
+    elif done < ran:
+        result.notes.append(f"Only {done} of {ran} search queries completed; coverage is partial.")
     if claims:
         for confirmed in corroborated_claims(claims):
             result.add(Finding(

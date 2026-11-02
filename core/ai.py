@@ -28,7 +28,10 @@ def endpoint() -> str:
 def status() -> tuple[bool, list[str], str]:
     try:
         data = http.get_json(endpoint() + "/api/tags", timeout=3)
-        return True, [m["name"] for m in data.get("models", [])], ""
+        models = data.get("models", []) if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return False, [], "Ollama returned an unexpected response (not an Ollama /api/tags reply)"
+        return True, [m["name"] for m in models if isinstance(m, dict) and isinstance(m.get("name"), str)], ""
     except HttpError as e:
         return False, [], str(e)
 
@@ -70,7 +73,12 @@ def analyze(inv_id: int, task: str = "summary") -> str:
         "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]})
     if r.status_code >= 400:
         raise RuntimeError(f"Ollama returned HTTP {r.status_code}: {r.text[:200]}")
-    text = r.json().get("message", {}).get("content", "").strip()
+    try:
+        text = str((r.json().get("message") or {}).get("content", "")).strip()
+    except (ValueError, AttributeError):
+        raise RuntimeError("Ollama returned an unreadable response; no analysis was produced.") from None
+    if not text:
+        raise RuntimeError("Ollama returned an empty analysis; nothing was saved.")
     # strip deepseek-r1 reasoning block
     if "</think>" in text:
         text = text.split("</think>", 1)[1].strip()

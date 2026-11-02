@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from core import http, search_engine
 from core.http import HttpError
-from core.models import (E_SOCIAL, E_URL, E_USERNAME, LOW, MODERATE, R_LINKS_TO, R_SHARES_ID, UNVERIFIED, VERIFIED,
+from core.models import (E_SOCIAL, E_URL, E_USERNAME, LOW, MODERATE, R_LINKS_TO, R_SHARES_ID, UNVERIFIED, VERIFIED, INCONCLUSIVE,
                          Finding, ModuleResult)
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
@@ -138,14 +138,14 @@ def check_site(site: Site, u: str) -> dict:
         r = http.get(url, timeout=10, max_bytes=2_000_000)
         code = r.status_code
         if code == 429:
-            out.update(state="inconclusive", detail="rate limited (HTTP 429)")
+            out.update(state="blocked", detail="rate limited (HTTP 429)")
             return out
         if code in (401, 403) or code >= 500:
-            out.update(state="inconclusive", detail=f"blocked or unavailable (HTTP {code})")
+            out.update(state="blocked" if code < 500 else "error", detail=f"blocked or unavailable (HTTP {code})")
             return out
         page_text = r.text
         if code == 200 and _looks_like_challenge(page_text):
-            out.update(state="inconclusive", detail="anti-bot challenge page (profile cannot be verified)")
+            out.update(state="blocked", detail="anti-bot challenge page (profile cannot be verified)")
             return out
         body = None
         if site.method in ("json_nonempty", "json_not_null", "keybase", "wiki", "reddit") or site.meta:
@@ -232,7 +232,7 @@ def investigate(target: str, *, web_search: bool = True, check_variants: bool = 
     found = [r for r in results if r["state"] == "found"]
     seen_urls = set()
     for r in results:
-        res.source(r["site"], r["check"], {"found": "ok", "not_found": "ok"}.get(r["state"], "error"),
+        res.source(r["site"], r["check"], {"found": "ok", "not_found": "ok", "blocked": "blocked"}.get(r["state"], "error"),
                    r["state"] + (f" — {r['detail']}" if r["detail"] else ""))
         if r["state"] == "found":
             if r["url"] in seen_urls:
@@ -249,9 +249,9 @@ def investigate(target: str, *, web_search: bool = True, check_variants: bool = 
             if site_url and site_url.startswith("http"):
                 res.relate(s_ent, res.entity(E_URL, site_url, MODERATE, r["site"]), R_LINKS_TO, MODERATE,
                            f"{r['site']} profile website field")
-        elif r["state"] in ("inconclusive", "error"):
-            res.add(Finding(f"Check inconclusive: {r['site']}", r["detail"] or "No definitive answer.", r["site"],
-                            UNVERIFIED, "profiles-inconclusive", r["url"], r["url"],
+        elif r["state"] in ("inconclusive", "blocked", "error"):
+            res.add(Finding(f"Check inconclusive ({r['state']}): {r['site']}", r["detail"] or "No definitive answer.", r["site"],
+                            INCONCLUSIVE, "profiles-inconclusive", r["url"], r["url"],
                             limitations="The platform did not give a definitive answer to an automated check."))
 
     # cross-platform comparison of self-reported names / locations
@@ -281,6 +281,7 @@ def investigate(target: str, *, web_search: bool = True, check_variants: bool = 
 
     if web_search:
         hits = search_engine.search(f'"{u}"', 10, res)
+        search_engine.note_zero_results(hits, res, "the username")
         search_engine.results_to_findings(hits, res, category="web-references", exact_term=u.lower(),
                                           what=f'exact username query "{u}"')
     res.notes.append(f"{len(found)} of {len(results)} automated platform checks found a public profile.")

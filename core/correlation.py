@@ -58,14 +58,42 @@ def detect_type(value: str) -> tuple[str, str]:
     return "unknown", "no pattern matched"
 
 
+# Shared hosting / mail / DNS / resolver infrastructure. Two subjects using the same provider are NOT related
+# because of it, so such entities are flagged `generic` and shown separately, never as evidence of a connection.
+GENERIC_INFRA_SUFFIXES = (
+    "gmail.com", "googlemail.com", "google.com", "googleusercontent.com", "outlook.com", "hotmail.com", "live.com",
+    "msn.com", "office365.com", "protection.outlook.com", "yahoo.com", "yahoodns.net", "icloud.com", "me.com",
+    "aol.com", "proton.me", "protonmail.com", "protonmail.ch", "gmx.com", "gmx.de", "zoho.com", "fastmail.com",
+    "cloudflare.com", "cloudflare.net", "amazonaws.com", "awsdns", "azure-dns", "azurewebsites.net", "akamai.net",
+    "fastly.net", "github.io", "github.com", "githubusercontent.com", "godaddy.com", "domaincontrol.com",
+    "namecheap.com", "registrar-servers.com", "wixdns.net", "squarespace.com", "mailgun.org", "sendgrid.net",
+)
+GENERIC_IPS = {"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "2606:4700:4700::1111", "2001:4860:4860::8888"}
+
+
+def is_generic_infrastructure(entity_type: str, value: str) -> bool:
+    v = (value or "").strip().lower().rstrip(".")
+    if entity_type == "ip":
+        return v in GENERIC_IPS
+    if entity_type in ("domain", "organization"):
+        return any(v == s or v.endswith("." + s) or v.endswith(s) and "." not in s for s in GENERIC_INFRA_SUFFIXES)
+    return False
+
+
 def shared_entities(min_investigations: int = 2) -> list[dict]:
-    """Entities that appear in more than one investigation — the core cross-investigation correlation."""
+    """Entities that appear in more than one investigation. Each row has `generic` = True for common shared
+    infrastructure (webmail, DNS, CDN, public resolvers); that is not evidence that subjects are connected."""
     rows = get_db().q("""SELECT e.id, e.entity_type, e.value, e.verification, COUNT(DISTINCT ie.investigation_id) n,
                          GROUP_CONCAT(DISTINCT i.ref) refs
                          FROM entities e JOIN investigation_entities ie ON ie.entity_id=e.id
                          JOIN investigations i ON i.id=ie.investigation_id
                          GROUP BY e.id HAVING n >= ? ORDER BY n DESC, e.entity_type""", (min_investigations,))
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["generic"] = is_generic_infrastructure(d["entity_type"], d["value"])
+        out.append(d)
+    return out
 
 
 def entity_neighbors(entity_id: int) -> list[dict]:
