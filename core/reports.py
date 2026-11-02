@@ -22,6 +22,38 @@ STANDING_LIMITS = [
 ]
 
 
+def _records_review(inv_type: str, findings: list[dict], sources: list[dict], contra: list[str]) -> dict | None:
+    """Court / registry investigations: separate what the official sources said from what is unverified,
+    reviewed, missing, inaccessible, conflicting or only partially covered."""
+    if inv_type not in ("court", "registry"):
+        return None
+    from modules.records_shared import COURT_CATEGORIES, NOT_PROVIDED, REGISTRY_CATEGORIES
+    cats = COURT_CATEGORIES if inv_type == "court" else REGISTRY_CATEGORIES
+    recs = [f for f in findings if f["category"] in cats]
+    manual = [f for f in recs if f["category"].endswith("_manual")]
+    missing = []
+    for f in recs:
+        gaps = [ln.split(":", 1)[0] for ln in (f["evidence"] or "").splitlines() if ln.endswith(NOT_PROVIDED)]
+        if gaps:
+            missing.append(f"{f['title']}: {', '.join(gaps)}")
+    kind = "court records" if inv_type == "court" else "registry listings"
+    return {
+        "official_source_information": [f"{f['source']}: {f['value']} <{f['source_url'] or 'no URL recorded'}>" for f in recs],
+        "unverified_name_matches": f"{sum(1 for f in recs if f['confidence'] == 'UNVERIFIED')} of {len(recs)} {kind} "
+                                   "are UNVERIFIED name/identifier matches; none is a confirmed record of the person searched.",
+        "manually_reviewed_records": f"{len(recs)} record(s) attached by the operator after manual review "
+                                    f"({len(manual)} entered from the official portal, {len(recs) - len(manual)} returned by a source search).",
+        "missing_information": missing or ["None of the attached records had empty fields."] if recs else ["No records attached."],
+        "inaccessible_sources": [f"{s['name']} [{s['status']}]" for s in sources
+                                 if s["status"] in ("error", "not_configured", "skipped", "blocked")],
+        "conflicting_records": contra or [],
+        "partial_coverage": [s["name"] for s in sources],
+        "statement": ("Absence of a record in the sources searched does not establish absence elsewhere. "
+                      + ("A registry listing is not proof of current whereabouts." if inv_type == "registry"
+                         else "An arrest or charge is not a conviction; a dismissal is not an acquittal.")),
+    }
+
+
 def build(inv_id: int) -> dict:
     db = get_db()
     inv = db.get_investigation(inv_id)
@@ -62,6 +94,7 @@ def build(inv_id: int) -> dict:
         + [f"Source blocked automated checks: {s['name']} — {s['detail']}" for s in blocked]
                        + [f"Not configured: {s['name']}" for s in not_cfg],
         "conclusion": conclusion, "ai_analysis": inv["ai_summary"] or "",
+        "records_review": _records_review(inv["inv_type"], findings, sources, contra),
     }
 
 
@@ -73,6 +106,16 @@ def to_txt(r: dict) -> str:
            "", "CONCLUSION", "-" * 78, r["conclusion"], ""]
     if r["ai_analysis"]:
         out += ["AI ANALYSIS (local model, unverified)", "-" * 78, r["ai_analysis"], ""]
+    rr = r.get("records_review")
+    if rr:
+        out += ["RECORDS REVIEW (official sources vs. unverified matches)", "-" * 78,
+                rr["unverified_name_matches"], rr["manually_reviewed_records"], "",
+                "Official source information:"] + [f"  - {x}" for x in rr["official_source_information"] or ["none attached"]]
+        out += ["Missing information:"] + [f"  - {x}" for x in rr["missing_information"]]
+        out += ["Inaccessible or manual-only sources:"] + [f"  - {x}" for x in rr["inaccessible_sources"] or ["none"]]
+        out += ["Conflicting records:"] + [f"  - {x}" for x in rr["conflicting_records"] or ["none detected"]]
+        out += ["Partial coverage (every source searched is partial): " + "; ".join(rr["partial_coverage"] or ["none"]),
+                rr["statement"], ""]
     out += ["FINDINGS", "-" * 78]
     cat = None
     for i, f in enumerate(r["findings"], 1):
@@ -154,6 +197,19 @@ def to_html(r: dict) -> str:
                    f'{anchor(s["url"])} {esc(s["detail"])}</li>' for s in r["sources_consulted"])
     contra = "".join(f"<li>{esc(c)}</li>" for c in r["contradictions"]) or "<li>None detected.</li>"
     lims = "".join(f"<li>{esc(x)}</li>" for x in r["limitations"])
+    rr = r.get("records_review")
+    rr_html = ""
+    if rr:
+        def ul(items):
+            return "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in items) + "</ul>"
+        rr_html = ("<section><h2>Records review</h2><div class=\"concl\">"
+                   f"<p>{esc(rr['unverified_name_matches'])}</p><p>{esc(rr['manually_reviewed_records'])}</p>"
+                   "<b>Official source information</b>" + ul(rr["official_source_information"] or ["none attached"]) +
+                   "<b>Missing information</b>" + ul(rr["missing_information"]) +
+                   "<b>Inaccessible or manual-only sources</b>" + ul(rr["inaccessible_sources"] or ["none"]) +
+                   "<b>Conflicting records</b>" + ul(rr["conflicting_records"] or ["none detected"]) +
+                   "<b>Partial coverage</b>" + ul(rr["partial_coverage"] or ["none"]) +
+                   f"<p class=\"muted\">{esc(rr['statement'])}</p></div></section>")
     ai = f'<section><h2>AI analysis <span class="muted">(local model · unverified)</span></h2><pre class="ai">{esc(r["ai_analysis"])}</pre></section>' if r["ai_analysis"] else ""
     return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -187,6 +243,7 @@ investigated {esc(inv['timestamp'])} &nbsp;·&nbsp; report {esc(r['report_genera
 <section><h2>Conclusion</h2><div class="concl">{esc(r['conclusion'])}</div>
 <p class="chips" style="margin-top:12px">{chips}</p></section>
 {ai}
+{rr_html}
 <section><h2>Findings ({len(r['findings'])})</h2><table><tbody>{''.join(frows) or '<tr><td>No findings.</td></tr>'}</tbody></table></section>
 <section><h2>Contradictions</h2><ul>{contra}</ul></section>
 <section><h2>Related public entities</h2><ul>{ents}</ul></section>

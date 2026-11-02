@@ -66,6 +66,8 @@ The tests run against a temporary `TRACEPOINT_HOME` (database, reports, logs, co
 | 13 | **API Configuration** | Add optional API keys (stored encrypted) | — |
 | 14 | **Settings** | Ollama URL/model, DB backup, encryption mode | — |
 | 15 | **AI Analyst** | Ollama connection/model status | — |
+| 16 | **Court Records** | Official court sources: automated search where a documented source allows it (federal opinions via GovInfo), otherwise the official portal; you review and attach records | ✔ |
+| 17 | **Sex Offender Registry** | Official registries (NSOPW, NC SBI): manual lookup guidance and operator-reviewed listings; no addresses stored | ✔ |
 
 Name Intelligence requires the operator to affirm authorization before each run. Supply a defined research context
 when useful. It searches only through configured Brave Search, Google Programmable Search or SearXNG APIs; without
@@ -82,6 +84,52 @@ describe numbering-plan allocation only. For national-format input, the app asks
 international numbers with a leading `+` use their country calling code. Public web-reference searches use configured Brave Search, Google Programmable
 Search, or SearXNG APIs; when none is configured, phone search reports that fact and does not fall back to DuckDuckGo
 HTML scraping. Search results are leads and retain source URLs and retrieval times.
+
+## Court Records and Sex Offender Registry (menu 16 and 17)
+
+Both use official government sources only. **They do not provide nationwide automated coverage**, and nothing in
+either module decides that a record belongs to the person searched: every record is an `UNVERIFIED` name match until
+you verify it yourself, and only records you review and choose to attach are stored.
+
+| Source | Agency | Jurisdiction | Search in TRACEPOINT | Authentication | Coverage |
+|---|---|---|---|---|---|
+| GovInfo - U.S. Courts Opinions | U.S. Government Publishing Office | Federal | **Automated** (name / case-number full-text) | Free api.data.gov key in *API Configuration* | Published opinions only, not dockets; partial |
+| PACER Case Locator | Administrative Office of the U.S. Courts | Federal | Manual (official page + your review) | PACER account; $0.10/page, waived at $30 or less per quarter; name searches are billed even with no matches | Nationwide index of federal cases |
+| NC Judicial Branch records search | NC Administrative Office of the Courts | North Carolina | Manual | **Unverified** (the official pages returned HTTP 403 to automated checks) | Unknown; county portals not catalogued |
+| NSOPW | U.S. DOJ SMART Office | National | Manual (no API; automated searching and CAPTCHA bypass are prohibited by its terms) | Accept conditions of use; CAPTCHA | Participating jurisdictions; depends on each |
+| NC Sex Offender Registry | NC State Bureau of Investigation | North Carolina | Manual (no API or automated-access rule is stated; search form not verified) | Not stated | 100 counties; excludes juveniles adjudicated delinquent |
+
+Only GovInfo is searched automatically. PACER's Case Locator API needs your PACER login and its endpoint documentation
+could not be read, so it is not used. Searches that the portals offer by address, radius, ZIP or registry status are
+deliberately **not** supported; TRACEPOINT accepts only a person's name, a case number (courts) or a registry
+identification number (registries).
+
+**Workflow.** Pick a jurisdiction and an official source, enter a name or number, confirm authorization, then either
+review automated candidates or open the official page (TRACEPOINT shows the URL and can open it in your browser) and
+type in what you reviewed. Each record needs your explicit confirmation before it is attached. The search itself is
+saved to History even when nothing is attached.
+
+**Classification rules.** The source's own wording is always stored next to TRACEPOINT's normalized value.
+Court statuses: `PENDING`, `DISMISSED`, `CONVICTED`, `ACQUITTED`, `DEFERRED`, `SEALED / UNAVAILABLE`, `UNKNOWN`; only
+explicit wording is classified. An arrest, charge or filing is never a conviction; a dismissal is never an acquittal;
+civil and published-opinion records can never be `CONVICTED` or `ACQUITTED`. Registry statuses: `ACTIVE`,
+`INACTIVE`, `DECEASED`, `ABSCONDED`, `UNKNOWN`. A registry listing is not proof of current whereabouts.
+
+**Empty and missing results.** A completed search with no records says: "No records found in the sources searched. This
+does not establish that the individual has no criminal or court history." (registries: "No registry records were returned
+by the sources searched. This does not establish that an individual is absent from every registry."). A search that never
+ran (manual source, failed provider, missing key) is reported as such, never as "nothing found".
+
+**Data handling.** Registry records have no address, location, photo or physical-description fields, and street-address-like
+text is rejected. Candidates you do not attach are not stored. Source URLs are kept (http/https only; hosts outside the
+source's official domains are flagged). Reports add a *Records review* section that separates official source information,
+unverified name matches, reviewed records, missing information, inaccessible sources, conflicts and partial coverage.
+Use is limited to authorized subjects and public-safety awareness; threatening, harassing or intimidating anyone is
+prohibited by the registries' terms and may be prosecuted.
+
+**Adding a jurisdiction.** Add an `OfficialSource` (agency, URLs, method, supported fields, authentication, coverage,
+verification note) to `providers/court_sources.py` or `providers/registry_sources.py`. Mark it `automated` only when the
+agency documents a non-interactive search that permits it, and add a searcher with mocked-response tests.
 
 ## Confidence grades
 

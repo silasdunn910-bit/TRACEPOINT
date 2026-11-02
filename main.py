@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rich.align import Align
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.rule import Rule
@@ -33,6 +34,7 @@ MENU = [
     ("3", "username", "Username Intelligence"), ("4", "domain", "Domain Intelligence"),
     ("5", "ip", "IP Intelligence"), ("6", "social", "Social Intelligence"),
     ("7", "security", "Security Intelligence"), ("8", "name", "Name Intelligence"),
+    ("16", "court", "Court Records Intelligence"), ("17", "registry", "Sex Offender Registry Intelligence"),
 ]
 ACTIONS = [
     ("9", "universal", "Universal Search  [tp.dim](auto-detect identifier)[/tp.dim]"),
@@ -115,7 +117,8 @@ def authorize(inv_type: str) -> bool:
 def run_and_show(inv_type: str, target: str, **kwargs):
     if not target:
         return
-    if not authorize(inv_type):
+    already_authorized = kwargs.pop("already_authorized", False)
+    if not already_authorized and not authorize(inv_type):
         console.print("[tp.dim]Cancelled — authorization not given.[/tp.dim]")
         return
     if inv_type == "phone" and "default_region" not in kwargs:
@@ -401,18 +404,18 @@ def history():
 def view_investigation(inv_id: int):
     inv = db.get_investigation(inv_id)
     console.print(Panel(f"[tp.accent]{inv['ref']}[/tp.accent]  type [tp.val]{inv['inv_type']}[/tp.val]  "
-                        f"target [tp.val]{inv['target']}[/tp.val]\n[tp.dim]{inv['created_at']}  ·  {inv['status']}"
-                        f"{'  ·  '+inv['notes'].strip() if inv['notes'].strip() else ''}[/tp.dim]",
+                        f"target [tp.val]{escape(inv['target'])}[/tp.val]\n[tp.dim]{inv['created_at']}  ·  {inv['status']}"
+                        f"{'  ·  '+escape(inv['notes'].strip()) if inv['notes'].strip() else ''}[/tp.dim]",
                         border_style="tp.rule"))
     fs = db.findings(inv_id)
     cat = None
     for f in fs:
         if f["category"] != cat:
             cat = f["category"]; console.print(f"\n[tp.head]{cat.upper()}[/tp.head]")
-        console.print(f"  {render.confidence_text(f['confidence'])}  [tp.val]{f['title']}[/tp.val] "
-                      + (f"[tp.key]{f['value']}[/tp.key]" if f['value'] and f['value'] not in f['title'] else ""))
+        console.print(f"  {render.confidence_text(f['confidence'])}  [tp.val]{escape(f['title'])}[/tp.val] "
+                      + (f"[tp.key]{escape(f['value'])}[/tp.key]" if f['value'] and f['value'] not in f['title'] else ""))
         if f["source_url"]:
-            console.print(f"      [tp.accent2 underline]{f['source_url']}[/tp.accent2 underline]")
+            console.print(f"      [tp.accent2 underline]{escape(f['source_url'])}[/tp.accent2 underline]")
     if inv["ai_summary"]:
         console.print(Panel(inv["ai_summary"], title="[tp.head]AI ANALYSIS[/tp.head]", border_style="tp.rule"))
     action = Prompt.ask("\n[tp.accent]Action[/tp.accent]", choices=["report", "ai", "graph", "delete", "back"],
@@ -546,10 +549,172 @@ def ai_status_panel():
                             title="[tp.warn]AI OFFLINE[/tp.warn]", border_style="tp.warn"))
 
 
+# ------------------------------------------------------------ court records / registry workflows
+RECORDS_NOTICE = {
+    "court": ("Official court sources only. TRACEPOINT searches a source automatically only where its own documentation "
+              "allows it; otherwise it shows the official portal and you search there. A name match is NOT proof of "
+              "identity: you review each record and choose what to attach."),
+    "registry": ("Official registries only (NSOPW and state registries). Their terms prohibit automated searching, so "
+                 "you search the official portal yourself and record what you reviewed. A listing is not proof of "
+                 "identity or of current whereabouts. Use is limited to public-safety awareness; threatening, "
+                 "harassing or intimidating anyone is prohibited and may be prosecuted. TRACEPOINT stores no addresses."),
+}
+
+
+def _source_table(sources) -> Table:
+    t = Table(box=None, expand=True)
+    t.add_column("#", style="tp.key", width=3); t.add_column("Source", style="tp.val")
+    t.add_column("Search", width=10); t.add_column("Agency / authentication", style="tp.dim")
+    for i, s in enumerate(sources, 1):
+        t.add_row(str(i), s.name, Text("AUTOMATED" if s.automated else "MANUAL",
+                                         style="tp.ok" if s.automated else "tp.warn"), f"{s.agency}\n{s.auth}")
+    return t
+
+
+def _pick_source(sources):
+    console.print(_source_table(sources))
+    while True:
+        sel = ask("Source number (blank to cancel)")
+        if not sel:
+            return None
+        if sel.isdigit() and 1 <= int(sel) <= len(sources):
+            return sources[int(sel) - 1]
+        console.print("[tp.warn]Invalid selection.[/tp.warn]")
+
+
+def _show_source_details(s):
+    body = (f"Agency: {s.agency}\nJurisdiction: {s.level}/{s.jurisdiction}\nOfficial URL: {s.official_url}\n"
+            f"Search method: {s.method.upper()}\nSupported fields: {', '.join(s.search_fields)}\n"
+            f"Not supported: {', '.join(s.unsupported_fields)}\nAuthentication: {s.auth}\n"
+            f"Coverage ({'complete' if s.complete else 'PARTIAL'}): {s.coverage}\nLimitations: {s.limitations}\n"
+            f"Verification: {s.verified_note}")
+    console.print(Panel(body, title=f"[tp.accent]{s.name}[/tp.accent]", border_style="tp.rule"))
+
+
+def _choose_candidates(records, noun: str) -> list:
+    if not records:
+        return []
+    t = Table(box=None, expand=True)
+    t.add_column("#", style="tp.key", width=3); t.add_column("Record", style="tp.val")
+    t.add_column("Court / agency", style="tp.dim"); t.add_column("Date", width=11); t.add_column("Status", width=10)
+    for i, r in enumerate(records, 1):
+        t.add_row(str(i), Text(getattr(r, "title", "") or getattr(r, "displayed_name", "")),
+                  Text(getattr(r, "court", "") or getattr(r, "agency", "")),
+                  Text(getattr(r, "published_date", "") or getattr(r, "registration_date", "")), Text(r.status))
+        if r.source_url:
+            t.add_row("", Text(r.source_url, style="tp.dim"), "", "", "")
+    console.print(t)
+    console.print(f"[tp.warn]These are UNVERIFIED name matches. Open each {noun} at the official source and review it "
+                  "before attaching.[/tp.warn]")
+    while True:
+        sel = ask(f"Numbers of the {noun}s to attach (comma-separated; blank = attach none)")
+        if not sel:
+            return []
+        parts = [x.strip() for x in sel.split(",") if x.strip()]
+        if all(p.isdigit() and 1 <= int(p) <= len(records) for p in parts):
+            chosen = [records[int(p) - 1] for p in dict.fromkeys(parts)]
+            break
+        console.print("[tp.warn]Enter valid numbers from the list.[/tp.warn]")
+    return [r for r in chosen if Confirm.ask(
+        f"[tp.warn]I reviewed '{escape((getattr(r, 'title', '') or getattr(r, 'displayed_name', ''))[:60])}' at the official "
+        f"source and choose to attach it[/tp.warn]", console=console, default=False)]
+
+
+def _enter_manual_records(source, prompts: list[tuple[str, str, str]], validator) -> list[dict]:
+    out: list[dict] = []
+    while Confirm.ask(f"[tp.accent]Enter a record you reviewed on {source.name}?[/tp.accent]", console=console,
+                      default=False):
+        fields = {"source_id": source.id}
+        for key, label, hint in prompts:
+            fields[key] = ask(label, hint)
+        rec, errs = validator(fields)
+        if errs:
+            for e in errs:
+                console.print(f"[tp.warn]{e}[/tp.warn]")
+            continue
+        console.print(f"[tp.ok]✓ Recorded for review: {escape(rec.identifier())}  (normalized status: {rec.status})[/tp.ok]")
+        out.append(fields)
+    return out
+
+
+def _open_official(source):
+    console.print(f"Official search page: [tp.accent]{source.search_url}[/tp.accent]")
+    if Confirm.ask("Open it in your browser?", console=console, default=False):
+        import webbrowser
+        webbrowser.open(source.search_url)
+
+
+COURT_PROMPTS = [("title", "Case title as shown", ""), ("case_number", "Case number", "24CR000123-456"),
+                 ("court", "Court", ""),
+                 ("record_type", "Record type (CRIMINAL / CIVIL / PUBLISHED OPINION / UNKNOWN)", "UNKNOWN"),
+                 ("original_status", "Status/disposition exactly as the court words it", ""),
+                 ("charges", "Charges exactly as published (optional)", ""),
+                 ("filing_date", "Filing date (optional)", "2024-03-15"), ("disposition_date", "Disposition date (optional)", ""),
+                 ("source_url", "Official URL of the record", "https://")]
+REGISTRY_PROMPTS = [("displayed_name", "Name exactly as the registry displays it", ""),
+                    ("registry_id", "Registry identification number", ""),
+                    ("original_status", "Registration status exactly as displayed", ""),
+                    ("offense_classification", "Offense classification exactly as published", ""),
+                    ("registration_date", "Registration date (optional)", "2024-03-15"),
+                    ("source_updated", "Registry update date (optional)", ""),
+                    ("source_url", "Official URL of the listing", "https://")]
+
+
+def _records_flow(kind: str):
+    from modules import court_records_intel as court_mod, registry_intel as reg_mod
+    from providers.court_sources import JURISDICTIONS as CJ, sources_for as c_sources
+    from providers.registry_sources import JURISDICTIONS as RJ, sources_for as r_sources
+    court = kind == "court"
+    mod, jurisdictions, sources_for = (court_mod, CJ, c_sources) if court else (reg_mod, RJ, r_sources)
+    console.print(Panel(RECORDS_NOTICE[kind], title=f"[tp.warn]{SPECS[kind].label.upper()}[/tp.warn]", border_style="tp.warn"))
+    for code, name in jurisdictions.items():
+        console.print(f"  [tp.key]{code}[/tp.key]  {name}")
+    jur = Prompt.ask("Jurisdiction", choices=list(jurisdictions), default=next(iter(jurisdictions)), console=console)
+    source = _pick_source(sources_for(jur))
+    if source is None:
+        return
+    _show_source_details(source)
+    qkind = Prompt.ask("Search by", choices=list(mod.QUERY_KINDS), default="name", console=console)
+    term = ask("Full name" if qkind == "name" else "Case number" if court else "Registry identification number")
+    if not term:
+        return
+    term, err = mod.validate_query(term, qkind)
+    if err:
+        console.print(f"[tp.warn]{err}[/tp.warn]")
+        return
+    if not authorize(kind):
+        console.print("[tp.dim]Cancelled — authorization not given.[/tp.dim]")
+        return
+    with console.status("[tp.accent]Searching the official source…[/tp.accent]", spinner="dots"):
+        outcomes = mod.run_searches(term, qkind, [source.id])
+    out = outcomes[0]
+    console.print(f"[tp.accent]{source.name}[/tp.accent]: {out.status.upper()} — {escape(out.detail)}")
+    if out.status == "manual":
+        _open_official(source)
+    records = _choose_candidates(out.records, "record" if court else "listing")
+    if not court:
+        console.print("[tp.dim]Do not enter addresses or other location details; TRACEPOINT does not store them.[/tp.dim]")
+    manual = _enter_manual_records(source, COURT_PROMPTS if court else REGISTRY_PROMPTS, mod.manual_record)
+    if not records and not manual:
+        if not Confirm.ask("Nothing was attached. Save this search to history anyway?", console=console, default=True):
+            return
+    run_and_show(kind, term, already_authorized=True, search_kind=qkind, outcomes=outcomes,
+                 selected=records, manual_records=manual)
+
+
+def court_records_flow():
+    _records_flow("court")
+
+
+def registry_flow():
+    _records_flow("registry")
+
+
 DISPATCH = {
     "universal": universal_search, "graph": relationship_explorer, "history": history,
     "reports": reports_menu, "api": api_config, "settings": settings, "ai": ai_status_panel,
 }
+RECORD_FLOWS = {"court": court_records_flow, "registry": registry_flow}
 EXAMPLES = {"email": "you@example.com", "phone": "+1 415 555 2671", "username": "your_handle",
             "domain": "example.com", "ip": "8.8.8.8", "social": "https://github.com/you",
             "security": "suspicious-domain.xyz"}
@@ -557,6 +722,8 @@ EXAMPLES = {"email": "you@example.com", "phone": "+1 415 555 2671", "username": 
 
 def _run_choice(choice: str):
     module = next((k for n, k, _ in MENU if n == choice), None)
+    if module in RECORD_FLOWS:
+        return RECORD_FLOWS[module]()
     if module:
         console.print(Rule(f"[tp.head]{SPECS[module].label}[/tp.head]  [tp.dim]{SPECS[module].description}[/tp.dim]",
                            style="tp.rule"))

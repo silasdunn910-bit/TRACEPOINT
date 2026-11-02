@@ -58,6 +58,7 @@ API_INTEGRATIONS: dict[str, tuple[str, str, str]] = {
     "google_cse_key": ("Google Programmable Search key", "Search", "https://developers.google.com/custom-search/v1/overview"),
     "google_cse_cx": ("Google Programmable Search engine ID (cx)", "Search", "Created at https://programmablesearchengine.google.com/"),
     "searxng_url": ("SearXNG instance URL", "Search", "Your own SearXNG with JSON output enabled, e.g. http://127.0.0.1:8888"),
+    "govinfo_key": ("GovInfo API key (api.data.gov)", "Court", "https://www.govinfo.gov/api-signup (free) - federal court opinions search"),
     "ipinfo_token": ("IPinfo token", "IP", "https://ipinfo.io/signup (free tier)"),
     "abuseipdb_key": ("AbuseIPDB key", "IP", "https://www.abuseipdb.com/register (free tier)"),
     "virustotal_key": ("VirusTotal key", "Domain/IP", "https://www.virustotal.com/gui/join-us (free tier)"),

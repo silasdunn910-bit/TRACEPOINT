@@ -6,12 +6,12 @@ from dataclasses import dataclass
 
 from core.database import get_db
 from core.models import ModuleResult
-from modules import (domain_intel, email_intel, ip_intel, name_intel, phone_intel, security_intel, social_intel,
-                     username_intel)
+from modules import (court_records_intel, domain_intel, email_intel, ip_intel, name_intel, phone_intel, registry_intel,
+                     security_intel, social_intel, username_intel)
 
 # Identifier classes that can concern a specific person. These require the caller to
 # affirm the identifier is their own or one they are authorized to audit.
-PERSON_ORIENTED = {"email", "phone", "username", "social", "name"}
+PERSON_ORIENTED = {"email", "phone", "username", "social", "name", "court", "registry"}
 
 INFRASTRUCTURE = {"domain", "ip", "security"}
 
@@ -40,6 +40,8 @@ SPECS: dict[str, InvSpec] = {
     "social": InvSpec("social", "Social Intelligence", True, "Analyze a supplied public profile URL and its disclosed links."),
     "security": InvSpec("security", "Security Intelligence", False, "Phishing & suspicious-infrastructure indicators for a domain/URL."),
     "name": InvSpec("name", "Name Intelligence", True, "Search public sources for a stated, authorized research purpose; name hits do not establish identity."),
+    "court": InvSpec("court", "Court Records Intelligence", True, "Official court sources: search where permitted, otherwise link to the official portal; attach only records you reviewed. Name matches are not identity."),
+    "registry": InvSpec("registry", "Sex Offender Registry Intelligence", True, "Official registries (NSOPW, state): manual lookup guidance and operator-reviewed listings. No addresses stored; a listing is not identity or whereabouts."),
 }
 
 _RUNNERS = {
@@ -51,6 +53,8 @@ _RUNNERS = {
     "social": lambda t, **k: social_intel.investigate(t, **k),
     "security": lambda t, **k: security_intel.investigate(t, **k),
     "name": lambda t, **k: name_intel.investigate(t, **k),
+    "court": lambda t, **k: court_records_intel.investigate(t, **k),
+    "registry": lambda t, **k: registry_intel.investigate(t, **k),
 }
 
 

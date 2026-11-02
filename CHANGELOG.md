@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased (Phase 8)
+
+### Court Records Intelligence and Sex Offender Registry Intelligence (menu 16, 17)
+- New modules `court_records_intel` and `registry_intel` with separate record types, categories and report sections.
+- Official sources catalogued with agency, URL, method, authentication and coverage: GovInfo U.S. Courts Opinions (automated; needs a free api.data.gov key), PACER, NC Judicial Branch, NSOPW and the NC SBI registry (manual).
+- Identity safeguards: every record is `UNVERIFIED`; only records the operator reviews and attaches are stored; no merging by name; mandated empty-result wording; "search never ran" is never reported as "nothing found".
+- Normalized court and registry statuses next to the source's original wording; civil and opinion records can never be `CONVICTED`/`ACQUITTED`.
+- Registry records carry no address or location data; address-like text is rejected.
+- Reports gained a *Records review* section. No schema migration; historical investigations are untouched.
+- Rich markup in record text (square brackets) is escaped when shown in History and the new screens.
+- New integration key: `govinfo_key` (API Configuration).
+
 ## Unreleased (Phases 7 and 7.1)
 
 ### Security
