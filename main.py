@@ -150,8 +150,9 @@ def run_and_show(inv_type: str, target: str, **kwargs):
     if result.errors:
         console.print(Panel("\n".join(f"• {e}" for e in result.errors),
                             title="[tp.warn]SOURCE / LOOKUP ISSUES[/tp.warn]", border_style="tp.warn"))
-    if result.notes:
-        console.print(Panel("\n".join(f"• {n}" for n in result.notes), title="[tp.dim]NOTES[/tp.dim]",
+    shown_notes = [n for n in result.notes if not n.startswith("[coverage-data]")]
+    if shown_notes:
+        console.print(Panel("\n".join(f"• {escape(n)}" for n in shown_notes), title="[tp.dim]NOTES[/tp.dim]",
                             border_style="tp.rule"))
     console.print(f"[tp.ok]✓ Saved as investigation {db.get_investigation(inv_id)['ref']} (id {inv_id}).[/tp.ok]")
     post_investigation(inv_id)
@@ -402,10 +403,12 @@ def history():
 
 
 def view_investigation(inv_id: int):
+    from providers.coverage import parse_marker
     inv = db.get_investigation(inv_id)
+    _cov, _notes = parse_marker(inv["notes"])
     console.print(Panel(f"[tp.accent]{inv['ref']}[/tp.accent]  type [tp.val]{inv['inv_type']}[/tp.val]  "
                         f"target [tp.val]{escape(inv['target'])}[/tp.val]\n[tp.dim]{inv['created_at']}  ·  {inv['status']}"
-                        f"{'  ·  '+escape(inv['notes'].strip()) if inv['notes'].strip() else ''}[/tp.dim]",
+                        f"{'  ·  '+escape(_notes.strip()) if _notes.strip() else ''}[/tp.dim]",
                         border_style="tp.rule"))
     fs = db.findings(inv_id)
     cat = None
@@ -571,35 +574,25 @@ def _source_table(sources) -> Table:
     return t
 
 
-def _pick_source(sources):
-    console.print(_source_table(sources))
-    while True:
-        sel = ask("Source number (blank to cancel)")
-        if not sel:
-            return None
-        if sel.isdigit() and 1 <= int(sel) <= len(sources):
-            return sources[int(sel) - 1]
-        console.print("[tp.warn]Invalid selection.[/tp.warn]")
-
-
 def _show_source_details(s):
     body = (f"Agency: {s.agency}\nJurisdiction: {s.level}/{s.jurisdiction}\nOfficial URL: {s.official_url}\n"
             f"Search method: {s.method.upper()}\nSupported fields: {', '.join(s.search_fields)}\n"
             f"Not supported: {', '.join(s.unsupported_fields)}\nAuthentication: {s.auth}\n"
             f"Coverage ({'complete' if s.complete else 'PARTIAL'}): {s.coverage}\nLimitations: {s.limitations}\n"
             f"Verification: {s.verified_note}")
-    console.print(Panel(body, title=f"[tp.accent]{s.name}[/tp.accent]", border_style="tp.rule"))
+    console.print(Panel(body, title=f"[tp.accent]{escape(s.name)}[/tp.accent]", border_style="tp.rule"))
 
 
-def _choose_candidates(records, noun: str) -> list:
+def _choose_candidates(records, noun: str, names: dict | None = None) -> list:
     if not records:
         return []
     t = Table(box=None, expand=True)
     t.add_column("#", style="tp.key", width=3); t.add_column("Record", style="tp.val")
-    t.add_column("Court / agency", style="tp.dim"); t.add_column("Date", width=11); t.add_column("Status", width=10)
+    t.add_column("Provider / court / agency", style="tp.dim"); t.add_column("Date", width=11); t.add_column("Status", width=10)
     for i, r in enumerate(records, 1):
+        provider = (names or {}).get(r.source_id, "")
         t.add_row(str(i), Text(getattr(r, "title", "") or getattr(r, "displayed_name", "")),
-                  Text(getattr(r, "court", "") or getattr(r, "agency", "")),
+                  Text((provider + " - " if provider else "") + (getattr(r, "court", "") or getattr(r, "agency", ""))),
                   Text(getattr(r, "published_date", "") or getattr(r, "registration_date", "")), Text(r.status))
         if r.source_url:
             t.add_row("", Text(r.source_url, style="tp.dim"), "", "", "")
@@ -660,46 +653,150 @@ REGISTRY_PROMPTS = [("displayed_name", "Name exactly as the registry displays it
                     ("source_url", "Official URL of the listing", "https://")]
 
 
+def _choose_jurisdiction(kind: str):
+    """Step 1. Returns a providers.jurisdictions.Jurisdiction, or None for Back."""
+    from providers.jurisdictions import FEDERAL_ONLY, US_NATIONWIDE, resolve
+    third = "Federal Courts" if kind == "court" else "National Registry (NSOPW)"
+    while True:
+        body = Text(f"\n  1. United States (Nationwide)\n  2. Select a State\n  3. {third}\n  0. Back\n")
+        console.print(Panel(body, title="[tp.head]JURISDICTION SELECTION[/tp.head]", border_style="tp.accent", width=54))
+        sel = ask("Select jurisdiction")
+        if sel in ("0", ""):
+            return None
+        if sel == "1":
+            return US_NATIONWIDE
+        if sel == "3":
+            return FEDERAL_ONLY
+        if sel != "2":
+            console.print("[tp.warn]Enter 1, 2, 3 or 0.[/tp.warn]")
+            continue
+        while True:
+            console.print("Enter state name or abbreviation:\n[tp.dim]Examples: NC, SC, NY, CA, TX  (blank = back)[/tp.dim]")
+            text = ask("State")
+            if not text:
+                break
+            jur, err = resolve(text)
+            if err:
+                console.print(f"[tp.warn]{escape(err)}[/tp.warn]")
+                continue
+            return jur
+
+
+def _availability(kind: str, mod, jur):
+    """Step 3. Show what can and cannot be searched in the chosen jurisdiction, automated and manual apart."""
+    pl = mod.plan(jur)
+    title = "COURT RECORDS" if kind == "court" else "SEX OFFENDER REGISTRY"
+    where = ("UNITED STATES (NATIONWIDE REQUEST)" if jur.scope == "nationwide" else
+             "FEDERAL" if jur.scope == "federal" else jur.name.upper())
+    console.print(f"\n[tp.head]{title} - {escape(where)}[/tp.head]")
+    console.print("Available official sources:")
+    if pl.automated:
+        console.print("[tp.ok]AUTOMATED[/tp.ok] (TRACEPOINT runs the documented search):")
+        console.print(_source_table(pl.automated))
+    if pl.manual:
+        console.print("[tp.warn]MANUAL[/tp.warn] (you search the official site; TRACEPOINT cannot do it automatically):")
+        console.print(_source_table(pl.manual))
+    if not pl.sources:
+        console.print("[tp.warn]No official source is catalogued for this jurisdiction. Nothing can be searched or "
+                      "linked here (NOT IMPLEMENTED).[/tp.warn]")
+    if jur.scope == "state":
+        console.print("County resources: " + ("[tp.dim]none catalogued[/tp.dim]" if not any(
+            s.level == "county" for s in pl.sources) else "listed above"))
+        if kind == "court":
+            console.print("[tp.dim]Federal court records are a separate jurisdiction; choose 'Federal Courts' or "
+                          "'United States' to include them.[/tp.dim]")
+    if pl.not_implemented and jur.scope == "nationwide":
+        console.print(f"[tp.dim]No state source is implemented for {len(pl.not_implemented)} of 51 states/DC "
+                      "(they will be reported as NOT IMPLEMENTED, not silently skipped).[/tp.dim]")
+    console.print(f"Search scope: [tp.val]{escape(jur.label())}[/tp.val]")
+    return pl
+
+
+def _print_coverage(report):
+    from providers.coverage import COMPLETE
+    style = "tp.ok" if report.status == COMPLETE else "tp.warn"
+    body = "\n".join(escape(ln) for ln in report.lines()[1:])      # line 0 is the panel title
+    console.print(Panel(body, title=f"[{style}]{escape(report.headline())}[/{style}]", border_style=style))
+
+
+def _manual_stage(kind, mod, outcomes) -> list[dict]:
+    """MANUAL providers: show the official site and let the operator enter what they reviewed there."""
+    court = kind == "court"
+    manual = [o.source for o in outcomes if o.status == "manual"]
+    if not manual:
+        return []
+    t = Table(box=None, expand=True)
+    t.add_column("#", style="tp.key", width=3); t.add_column("Manual source / official site", style="tp.val")
+    t.add_column("Access and fees", style="tp.dim")
+    for i, s in enumerate(manual, 1):
+        t.add_row(str(i), Text(f"{s.name}\n{s.search_url}"), Text(s.auth))
+    console.print(Panel(t, title="[tp.warn]MANUAL SEARCH REQUIRED[/tp.warn]", border_style="tp.warn"))
+    console.print("[tp.warn]TRACEPOINT did NOT search these sources and cannot do so automatically. Nothing above "
+                  "implies a search was performed.[/tp.warn]")
+    records: list[dict] = []
+    while True:
+        sel = ask("Source number to enter a record you reviewed there (blank = done)")
+        if not sel:
+            return records
+        if not (sel.isdigit() and 1 <= int(sel) <= len(manual)):
+            console.print("[tp.warn]Invalid selection.[/tp.warn]")
+            continue
+        source = manual[int(sel) - 1]
+        _show_source_details(source)
+        _open_official(source)
+        if not court:
+            console.print("[tp.dim]Do not enter addresses or other location details; TRACEPOINT does not store them.[/tp.dim]")
+        records += _enter_manual_records(source, COURT_PROMPTS if court else REGISTRY_PROMPTS, mod.manual_record)
+
+
 def _records_flow(kind: str):
     from modules import court_records_intel as court_mod, registry_intel as reg_mod
-    from providers.court_sources import JURISDICTIONS as CJ, sources_for as c_sources
-    from providers.registry_sources import JURISDICTIONS as RJ, sources_for as r_sources
     court = kind == "court"
-    mod, jurisdictions, sources_for = (court_mod, CJ, c_sources) if court else (reg_mod, RJ, r_sources)
+    mod = court_mod if court else reg_mod
     console.print(Panel(RECORDS_NOTICE[kind], title=f"[tp.warn]{SPECS[kind].label.upper()}[/tp.warn]", border_style="tp.warn"))
-    for code, name in jurisdictions.items():
-        console.print(f"  [tp.key]{code}[/tp.key]  {name}")
-    jur = Prompt.ask("Jurisdiction", choices=list(jurisdictions), default=next(iter(jurisdictions)), console=console)
-    source = _pick_source(sources_for(jur))
-    if source is None:
-        return
-    _show_source_details(source)
-    qkind = Prompt.ask("Search by", choices=list(mod.QUERY_KINDS), default="name", console=console)
-    term = ask("Full name" if qkind == "name" else "Case number" if court else "Registry identification number")
-    if not term:
-        return
-    term, err = mod.validate_query(term, qkind)
-    if err:
-        console.print(f"[tp.warn]{err}[/tp.warn]")
-        return
-    if not authorize(kind):
-        console.print("[tp.dim]Cancelled — authorization not given.[/tp.dim]")
-        return
-    with console.status("[tp.accent]Searching the official source…[/tp.accent]", spinner="dots"):
-        outcomes = mod.run_searches(term, qkind, [source.id])
-    out = outcomes[0]
-    console.print(f"[tp.accent]{source.name}[/tp.accent]: {out.status.upper()} — {escape(out.detail)}")
-    if out.status == "manual":
-        _open_official(source)
-    records = _choose_candidates(out.records, "record" if court else "listing")
-    if not court:
-        console.print("[tp.dim]Do not enter addresses or other location details; TRACEPOINT does not store them.[/tp.dim]")
-    manual = _enter_manual_records(source, COURT_PROMPTS if court else REGISTRY_PROMPTS, mod.manual_record)
-    if not records and not manual:
-        if not Confirm.ask("Nothing was attached. Save this search to history anyway?", console=console, default=True):
+    while True:
+        jur = _choose_jurisdiction(kind)
+        if jur is None:
             return
-    run_and_show(kind, term, already_authorized=True, search_kind=qkind, outcomes=outcomes,
-                 selected=records, manual_records=manual)
+        _availability(kind, mod, jur)
+        methods = list(mod.QUERY_KINDS)
+        second = "case number" if court else "registry identification number"
+        console.print(Panel(Text(f"\n  1. Search by person name\n  2. Search by {second}\n  0. Back\n"),
+                            title="[tp.head]SEARCH METHOD[/tp.head]", border_style="tp.accent", width=54))
+        sel = ask("Search method")
+        if sel not in ("1", "2"):
+            if sel not in ("0", ""):
+                console.print("[tp.warn]Enter 1, 2 or 0.[/tp.warn]")
+            continue
+        qkind = methods[int(sel) - 1]
+        term = ask("Full name" if qkind == "name" else "Case number" if court else "Registry identification number")
+        if not term:
+            return
+        term, err = mod.validate_query(term, qkind)
+        if err:
+            console.print(f"[tp.warn]{escape(err)}[/tp.warn]")
+            return
+        if not authorize(kind):
+            console.print("[tp.dim]Cancelled — authorization not given.[/tp.dim]")
+            return
+        break
+    with console.status("[tp.accent]Searching the available official sources…[/tp.accent]", spinner="dots"):
+        outcomes, report = mod.search(term, qkind, jur)
+    _print_coverage(report)
+    names = {o.source.id: o.source.name for o in outcomes}
+    candidates = []
+    for o in outcomes:
+        if o.status in ("ok", "error", "not_configured", "skipped"):
+            console.print(f"[tp.accent]{escape(o.source.name)}[/tp.accent]: {o.status.upper()} — {escape(o.detail)}")
+        candidates += o.records
+    records = _choose_candidates(candidates, "record" if court else "listing", names)
+    manual = _manual_stage(kind, mod, outcomes)
+    if not records and not manual:
+        if not Confirm.ask("Nothing was attached. Save this search and its coverage report to history anyway?",
+                           console=console, default=True):
+            return
+    run_and_show(kind, term, already_authorized=True, search_kind=qkind, outcomes=outcomes, coverage=report,
+                 jurisdiction=jur, selected=records, manual_records=manual)
 
 
 def court_records_flow():

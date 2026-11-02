@@ -4,7 +4,7 @@ Branch `phase-6-integration`, on top of `643cca0` (Phase 7.1). Not pushed. 2026-
 
 ## 0. Summary and honest scope
 
-Both modules exist, are wired into the menu (16 and 17), the database, History and the reports, and are covered by 202 new
+Both modules exist (Part 2 below adds jurisdiction selection and coverage reporting), are wired into the menu (16 and 17), the database, History and the reports, and are covered by 202 new
 tests. **Automated coverage is deliberately narrow:** exactly one source is searched automatically (GovInfo's federal
 court *opinions*). Every other source (PACER, NC Judicial Branch, NSOPW, NC SBI registry) is *manual*: TRACEPOINT shows the
 official page, documents what the source supports, and records what the operator reviews. That is what the official
@@ -150,3 +150,94 @@ Verify the NC portals in a browser and, if a documented non-interactive path exi
 **WARNING - usable as a guided, manual-first records-review tool; not a nationwide automated search.** The safeguards (no auto-attribution, no unattached storage, no addresses, honest empty/failed-search wording, official-source attribution) are implemented and tested, the existing 251 tests and the real data are intact, and the single automated source works against its documented API. It should not be described as covering every jurisdiction, and the manual/unverified items above should be resolved before relying on it for anything beyond operator-reviewed leads.
 
 Phase 9 has not been started.
+
+---
+
+# Part 2 - Nationwide jurisdiction selection and search-coverage workflow
+
+2026-11-02, same branch, on top of `b4b1ac1`. Not pushed. Phase 9 not started.
+
+## 13. Summary
+
+Court Records (menu 16) and Sex Offender Registry (menu 17) now start with a jurisdiction menu (United States / a state /
+Federal Courts) and a search-method menu, and every search produces a coverage report generated from what the providers
+actually did. **This changes how a jurisdiction is chosen, not what can be searched.** All 50 states and DC can be
+selected, but the catalogue is unchanged: no provider, county source, URL or endpoint was added, because none was
+verified. A nationwide request therefore yields `PARTIAL` coverage at best (one automated source, GovInfo, and only when a
+key is stored), and a state other than NC yields `NONE` with the jurisdiction reported as `NOT IMPLEMENTED`.
+
+## 14. Supported jurisdiction selections
+
+| Input | Result |
+|---|---|
+| `US`, `USA`, `United States`, `Nationwide`, menu 1 | Nationwide *request* |
+| Two-letter code for any of the 50 states or `DC`, any case, padded with whitespace (menu 2) | That state |
+| Full state name in any case, repeated spaces or hyphens (`north carolina`, `West-Virginia`) | That state |
+| `District of Columbia`, `Washington DC`, `Washington, D.C.`, `D.C.` | DC (`Washington` alone is the state of WA) |
+| `Federal`, `Federal Courts`, menu 3 (registry module: National Registry / NSOPW) | Federal / national level |
+| Territories (PR, GU, ...), unknown names, empty / over-long / control-character input | Rejected with a message (near-miss suggestions, e.g. "Nort Carolina" -> North Carolina); the prompt repeats |
+
+Resolution is in `providers/jurisdictions.py`; input is NFKC-normalised and case-folded. Users never see provider ids.
+
+## 15. Actual coverage (what is real today)
+
+| Scope | Court Records | Registry |
+|---|---|---|
+| Nationwide | GovInfo **SEARCHED** (needs a stored key, otherwise `UNAVAILABLE`); PACER **MANUAL**; NC Judicial Branch **MANUAL**; 50 jurisdictions **NOT IMPLEMENTED**. Overall `PARTIAL` (or `NONE`) | NSOPW **MANUAL**; NC SBI **MANUAL**; 50 jurisdictions **NOT IMPLEMENTED**. Overall `NONE` |
+| NC | NC Judicial Branch MANUAL (federal courts excluded as a separate jurisdiction; no county sources catalogued). `NONE` | NSOPW (manual national route) + NC SBI, both MANUAL. `NONE` |
+| Any other state or DC | No source: `NOT IMPLEMENTED`, `NONE` | NSOPW MANUAL only (it can be narrowed to that state in the browser); state registry `NOT IMPLEMENTED`. `NONE` |
+| Federal / national | GovInfo (automated), PACER (manual) | NSOPW (manual) |
+
+- **Automated:** exactly one provider (GovInfo federal opinions). No registry is searched automatically (NSOPW prohibits it; NC SBI undocumented).
+- **Manual-only:** PACER, NC Judicial Branch, NSOPW, NC SBI. The URL, authentication and fees are shown; TRACEPOINT never says it searched them.
+- **Unsupported:** every jurisdiction except NC, for both modules (50 of 51 states/DC), and all county portals.
+- **COMPLETE** is only reachable if every provider in scope was searched, each claims `complete`, and no jurisdiction lacks a provider. No source claims completeness, so it is unreachable with the current catalogue (the logic is tested with synthetic sources).
+
+## 16. What changed
+
+**New:** `providers/jurisdictions.py` (51-entry table, `resolve`), `providers/coverage.py` (plan, execute, `CoverageReport`, statuses, serialisation), `tests/test_jurisdictions.py` (181 tests).
+
+**Modified:**
+- `providers/records_common.py`: `OfficialSource.kinds` (search kinds a source accepts), `SearchOutcome.error_kind`, `skipped` status.
+- `providers/court_sources.py`, `registry_sources.py`: NSOPW accepts name only; GovInfo marks reachability errors (offline, timeout, 429, 5xx) as `unavailable`. Source catalogues otherwise unchanged.
+- `modules/court_records_intel.py`, `registry_intel.py`: `plan()`, `search()`, `investigate(jurisdiction=, coverage=)`; a crashing provider becomes `FAILED` and the rest still run; providers are never substituted for one another.
+- `modules/records_shared.py`: coverage notes, scope evidence lines, source statuses.
+- `core/reports.py`: *Search scope and coverage* block (TXT/HTML/JSON); coverage parsed out of the notes.
+- `main.py`: jurisdiction menu, state prompt with retry, availability screen (automated vs manual), search-method menu, coverage panel, manual-source screen (URL, auth, fees, record entry); History hides the machine-readable line.
+- `README.md`, `CHANGELOG.md`, this report.
+
+**Database:** unchanged schema. The coverage report is stored as one machine-readable line in `investigations.notes` (plus readable summary lines), source statuses in `sources.detail`, and scope / jurisdiction / provider / method / coverage in each finding's `evidence`; URLs and retrieval times use the existing columns. No migration; `schema_version` is asserted unchanged. Historical investigations are untouched and show coverage as `NOT RECORDED`.
+
+## 17. Behaviour guarantees (all tested)
+
+- Coverage is generated from execution. Planned providers without an outcome are `SKIPPED` ("Not run in this search"); unsupported kinds are `SKIPPED` with a reason (NSOPW + registry id); missing key / offline / 429 / 5xx are `UNAVAILABLE`; 401/403/malformed replies/exceptions are `FAILED`.
+- "Nationwide" is described as a request in the CLI, notes and reports; the report says "NATIONWIDE REQUEST, not nationwide coverage" unless coverage is genuinely complete. No text claims all 50 states were searched.
+- Zero records from a searched source keeps the mandated empty-result wording and adds the "not proof" note; a search where nothing ran says `NO_SEARCH_RAN`.
+- Candidates are stored only after per-record operator confirmation; records are never merged by name (same name from two providers = two findings); court and registry findings keep separate categories; registry records still have no address fields.
+- The GovInfo key was checked absent from coverage JSON, reports and error text.
+
+## 18. Tests
+
+| Run | Result |
+|---|---|
+| Before | 453 passed |
+| After | **634 passed, 0 failed, 0 skipped** (453 + 181 new) |
+| Updated existing | 7 CLI tests in `test_court_records.py` / `test_registry_intel.py` changed to the new prompt order (jurisdiction menu, state, method, term); assertions were not weakened |
+| New coverage | all 50 abbreviations + DC (several casings each), all 50 full names (5 forms each), DC aliases, WA vs DC, VA vs WV, NFKC input, invalid/hostile input, near-miss hints, nationwide / state / federal discovery, no-provider states, mixed automated+manual (test doubles), partial/none/complete logic, provider failures (401/403/429/503/bad JSON/offline/exception), missing key, empty results, skipped providers, JSON round trip, court and registry integration, persistence, TXT/HTML/JSON reports, legacy investigations, offline operation, CLI (menu, retry, back, nationwide, federal, case number, no-provider state) |
+| Isolation | The suite's guard confirmed the real database, log and reports were unchanged |
+| Not done | No live search of any person; GovInfo not re-tested live in this part; registry automated providers exist only as test doubles; no human interactive session (one piped real-process run of menu 17 in a temporary home rendered correctly) |
+
+`pip check`: clean. No dependencies added.
+
+## 19. Known limitations
+
+- Selecting a state does not mean searching it: 50 of 51 jurisdictions have no state provider, and the only automated source is federal opinions via GovInfo (name-matching full text, no statuses, requires a key).
+- NC portals remain unverified (HTTP 403 / unreadable form); county sources are not catalogued. I did not research the other states' court or registry sites in this part, so none are listed (a guessed URL would be worse than a stated gap). NSOPW is the only route to other states' registries, and it is manual.
+- The coverage report lives in a notes line rather than its own table to honour "preserve the existing database architecture"; if that line is hand-edited away, reports show `NOT RECORDED`.
+- In a state scope the registry module also lists NSOPW (a national portal) while the court module does not list federal courts; this follows the "federal is a separate jurisdiction" rule, and NSOPW is how an operator would search that state's registry anyway.
+- `Washington` means the state; the District needs `DC` or `Washington DC`.
+- Menu numbering (16, 17) is unchanged and non-contiguous.
+
+## 20. Readiness
+
+**WARNING - the jurisdiction workflow is complete and honest; nationwide automated coverage does not exist.** Adding a state is now data entry (an `OfficialSource` with a verified agency URL and method) and appears in selection, discovery and coverage automatically. Phase 9 has not been started.

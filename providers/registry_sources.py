@@ -34,7 +34,8 @@ NSOPW = OfficialSource(
                 "TRACEPOINT never submits searches. It does not guarantee accuracy, completeness or timeliness and tells "
                 "users to verify information. Misuse (threats, intimidation, harassment) may be criminally prosecuted.",
     official_domains=("nsopw.gov",),
-    verified_note="nsopw.gov home, /search-0, /conditions-use and /faqs read 2026-11-02. Nothing was searched.")
+    verified_note="nsopw.gov home, /search-0, /conditions-use and /faqs read 2026-11-02. Nothing was searched.",
+    kinds=("name",))
 
 NC_SBI = OfficialSource(
     id="nc_sbi", name="North Carolina Sex Offender Registry",
@@ -54,6 +55,8 @@ NC_SBI = OfficialSource(
                   "text, not a form). No automated-access rule is stated, but none is documented either, so nothing is automated.")
 
 REGISTRY_SOURCES: dict[str, OfficialSource] = {s.id: s for s in (NSOPW, NC_SBI)}
+# Jurisdictions that have at least one catalogued registry source. Every state and DC can be SELECTED (see
+# providers/jurisdictions.py); only these have a source, and none is searched automatically.
 JURISDICTIONS = {"US": "National (NSOPW)", "NC": "North Carolina"}
 
 # Search kinds TRACEPOINT accepts for its own query. Portal-side narrowing (state, county, city, ZIP) is done in the

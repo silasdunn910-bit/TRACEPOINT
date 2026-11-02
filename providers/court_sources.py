@@ -68,6 +68,8 @@ NC_COURTS = OfficialSource(
                   "are UNVERIFIED. The entry URL is the state's published records page and should be checked in a browser.")
 
 COURT_SOURCES: dict[str, OfficialSource] = {s.id: s for s in (GOVINFO, PACER, NC_COURTS)}
+# Jurisdictions that have at least one catalogued court source. Every state and DC can be SELECTED (see
+# providers/jurisdictions.py); only these have a source, and only GovInfo is searched automatically.
 JURISDICTIONS = {"US": "Federal", "NC": "North Carolina (state)"}
 
 
@@ -118,10 +120,13 @@ def govinfo_search(term: str, kind: str, *, limit: int = 25) -> SearchOutcome:
         r = http.request("POST", GOVINFO_SEARCH_URL, params={"api_key": key}, json=body, retries=1, timeout=20)
     except http.HttpError as e:
         out.detail = f"{KIND_LABEL[TIMEOUT] if 'Timed out' in str(e) else KIND_LABEL[UNAVAILABLE]}: {e}"
+        out.error_kind = "unavailable"
         return out
     if r.status_code >= 400:
         kind_, msg = _http_error(r.status_code)
         out.detail = f"{KIND_LABEL[kind_]}: {msg}"
+        if kind_ in (RATE_LIMIT, SERVER_ERROR, UNAVAILABLE, TIMEOUT):
+            out.error_kind = "unavailable"
         return out
     try:
         data = r.json()

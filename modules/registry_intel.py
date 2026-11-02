@@ -7,7 +7,9 @@ location fields; a listing is not evidence of current whereabouts or of identity
 from __future__ import annotations
 
 from core.models import E_PERSON, UNVERIFIED, Finding, ModuleResult
-from modules.records_shared import CAT_REG_MANUAL, CAT_REG_REVIEWED, evidence_block, source_record
+from modules.records_shared import (CAT_REG_MANUAL, CAT_REG_REVIEWED, coverage_notes, evidence_block,
+                                     resolve_jurisdiction, scope_evidence, source_record)
+from providers import coverage as cov
 from providers.records_common import (EMPTY_REGISTRY, IDENTITY_LIMIT, NO_SEARCH_RAN, REVIEWED, UNKNOWN,
                                        RegistryRecord, OfficialSource, SearchOutcome, check_source_url,
                                        classify_registry_status, clean_text, parse_date, reject_address_text,
@@ -28,14 +30,34 @@ def validate_query(term: str, kind: str) -> tuple[str, str]:
                 "(address, radius, ZIP) are deliberately not supported.")
 
 
-def run_searches(term: str, kind: str, source_ids: list[str] | None = None) -> list[SearchOutcome]:
-    outcomes = []
-    for sid in (source_ids or list(REGISTRY_SOURCES)):
+def plan(jurisdiction) -> cov.SearchPlan:
+    """Providers that apply to a jurisdiction (text, Jurisdiction or None = nationwide). Raises ValueError if invalid."""
+    jur, err = resolve_jurisdiction(jurisdiction)
+    if err:
+        raise ValueError(err)
+    return cov.plan(REGISTRY_SOURCES, jur, "registry", national_in_state=True)
+
+
+def search(term: str, kind: str, jurisdiction=None) -> tuple[list[SearchOutcome], cov.CoverageReport]:
+    """Search every compatible provider in the jurisdiction; returns the outcomes and the generated coverage report.
+    Manual providers return instructions without any network traffic."""
+    jur, err = resolve_jurisdiction(jurisdiction)
+    if err:
+        raise ValueError(err)
+    return cov.execute("registry", REGISTRY_SOURCES, jur, term, kind, search_source, national_in_state=True)
+
+
+def run_searches(term: str, kind: str, source_ids: list[str] | None = None, jurisdiction=None) -> list[SearchOutcome]:
+    """Ask each chosen source (default: every catalogued source in the jurisdiction; nationwide if none given)."""
+    if source_ids is None:
+        return search(term, kind, jurisdiction)[0]
+    sources = []
+    for sid in source_ids:
         source = REGISTRY_SOURCES.get(sid)
         if source is None:
             raise ValueError(f"Unknown registry source: {sid}")
-        outcomes.append(search_source(source, term, kind))
-    return outcomes
+        sources.append(source)
+    return cov.run_sources(sources, term, kind, search_source)
 
 
 def manual_record(fields: dict) -> tuple[RegistryRecord | None, list[str]]:
@@ -73,8 +95,8 @@ def manual_record(fields: dict) -> tuple[RegistryRecord | None, list[str]]:
                           source_url=url, url_note=note, agency=source.agency, origin="manual"), []
 
 
-def _finding(rec: RegistryRecord, source: OfficialSource, query: str) -> Finding:
-    evidence = evidence_block([
+def _finding(rec: RegistryRecord, source: OfficialSource, query: str, report: cov.CoverageReport | None = None) -> Finding:
+    evidence = evidence_block((scope_evidence(report, source.id) if report else []) + [
         ("Registry / agency", rec.agency or source.agency), ("Registry jurisdiction", rec.jurisdiction),
         ("Name as displayed by registry", rec.displayed_name), ("Registry identification number", rec.registry_id),
         ("Registry-displayed status", rec.original_status), ("TRACEPOINT normalized status", rec.status),
@@ -103,19 +125,34 @@ def _finding(rec: RegistryRecord, source: OfficialSource, query: str) -> Finding
 
 def investigate(target: str, *, search_kind: str = "name", outcomes: list[SearchOutcome] | None = None,
                 selected: list[RegistryRecord] | None = None, manual_records: list[dict] | None = None,
-                source_ids: list[str] | None = None) -> ModuleResult:
+                source_ids: list[str] | None = None, jurisdiction=None,
+                coverage: cov.CoverageReport | None = None) -> ModuleResult:
+    """`jurisdiction`: None/'US' = nationwide request, 'NC'/'North Carolina' = one state, or a Jurisdiction.
+    `outcomes`/`coverage` may be supplied by a caller that already ran the searches (the CLI does)."""
     term, err = validate_query(target, search_kind)
     result = ModuleResult("registry", term or clean_text(target, 160))
     if err:
         result.errors.append(err)
         return result
+    jur, jerr = resolve_jurisdiction(jurisdiction)
+    if jerr:
+        result.errors.append(jerr)
+        return result
     if outcomes is None:
-        outcomes = run_searches(term, search_kind, source_ids)
+        if source_ids is None:
+            outcomes, coverage = search(term, search_kind, jur)
+        else:
+            outcomes = run_searches(term, search_kind, source_ids)
+    if coverage is None:
+        pl = cov.plan(REGISTRY_SOURCES, jur, "registry", national_in_state=True) if source_ids is None else None
+        coverage = cov.build_report("registry", jur, search_kind, pl, outcomes)
+    cstatus = {e.provider_id: e.status for e in coverage.entries}
     result.notes.append(f"Search type: {search_kind}. Purpose: audit of public registry information for an authorized "
                         "subject, for public-safety awareness only. Listings below were entered by the operator "
                         "after manual review.")
+    result.notes.extend(coverage_notes(coverage))
     for o in outcomes:
-        result.sources.append(source_record(o))
+        result.sources.append(source_record(o, cstatus.get(o.source.id, "")))
         if o.status == "error":
             result.errors.append(f"{o.source.name}: {o.detail}")
         elif o.status == "not_configured":
@@ -153,7 +190,7 @@ def investigate(target: str, *, search_kind: str = "name", outcomes: list[Search
                     source_url=rec.source_url, limitations="Check the official registry; one entry may be outdated or mistyped."))
             continue
         seen[k] = rec
-        result.add(_finding(rec, source, term))
+        result.add(_finding(rec, source, term, coverage))
 
     unattached = max(0, returned - len([1 for r, _ in chosen if r.origin == "automated"]))
     if unattached:

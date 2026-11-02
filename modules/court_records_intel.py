@@ -7,7 +7,9 @@ not attached are never stored. Nothing in this module decides that a record belo
 from __future__ import annotations
 
 from core.models import E_PERSON, UNVERIFIED, Finding, ModuleResult
-from modules.records_shared import (CAT_COURT_MANUAL, CAT_COURT_REVIEWED, evidence_block, source_record)
+from modules.records_shared import (CAT_COURT_MANUAL, CAT_COURT_REVIEWED, coverage_notes, evidence_block,
+                                     resolve_jurisdiction, scope_evidence, source_record)
+from providers import coverage as cov
 from providers.court_sources import COURT_SOURCES, search_source
 from providers.records_common import (CIVIL, CONVICTED, CRIMINAL, EMPTY_COURT, IDENTITY_LIMIT, NO_SEARCH_RAN, OPINION,
                                        RECORD_TYPES, REVIEWED, TYPE_UNKNOWN, UNKNOWN, CourtRecord, OfficialSource,
@@ -25,15 +27,34 @@ def validate_query(term: str, kind: str) -> tuple[str, str]:
     return "", f"Unsupported search type '{kind}' (use one of: {', '.join(QUERY_KINDS)})."
 
 
-def run_searches(term: str, kind: str, source_ids: list[str] | None = None) -> list[SearchOutcome]:
-    """Ask each chosen source. Manual sources return instructions without any network traffic."""
-    outcomes = []
-    for sid in (source_ids or list(COURT_SOURCES)):
+def plan(jurisdiction) -> cov.SearchPlan:
+    """Providers that apply to a jurisdiction (text, Jurisdiction or None = nationwide). Raises ValueError if invalid."""
+    jur, err = resolve_jurisdiction(jurisdiction)
+    if err:
+        raise ValueError(err)
+    return cov.plan(COURT_SOURCES, jur, "court")
+
+
+def search(term: str, kind: str, jurisdiction=None) -> tuple[list[SearchOutcome], cov.CoverageReport]:
+    """Search every compatible provider in the jurisdiction; returns the outcomes and the generated coverage report.
+    Manual providers return instructions without any network traffic."""
+    jur, err = resolve_jurisdiction(jurisdiction)
+    if err:
+        raise ValueError(err)
+    return cov.execute("court", COURT_SOURCES, jur, term, kind, search_source)
+
+
+def run_searches(term: str, kind: str, source_ids: list[str] | None = None, jurisdiction=None) -> list[SearchOutcome]:
+    """Ask each chosen source (default: every catalogued source in the jurisdiction; nationwide if none given)."""
+    if source_ids is None:
+        return search(term, kind, jurisdiction)[0]
+    sources = []
+    for sid in source_ids:
         source = COURT_SOURCES.get(sid)
         if source is None:
             raise ValueError(f"Unknown court source: {sid}")
-        outcomes.append(search_source(source, term, kind))
-    return outcomes
+        sources.append(source)
+    return cov.run_sources(sources, term, kind, search_source)
 
 
 def manual_record(fields: dict) -> tuple[CourtRecord | None, list[str]]:
@@ -76,9 +97,9 @@ def manual_record(fields: dict) -> tuple[CourtRecord | None, list[str]]:
                        source_updated=dates["source_updated"], source_url=url, url_note=note, origin="manual"), []
 
 
-def _finding(rec: CourtRecord, source: OfficialSource, query: str) -> Finding:
+def _finding(rec: CourtRecord, source: OfficialSource, query: str, report: cov.CoverageReport | None = None) -> Finding:
     manual = rec.origin == "manual"
-    evidence = evidence_block([
+    evidence = evidence_block((scope_evidence(report, source.id) if report else []) + [
         ("Record type", rec.record_type), ("Court / agency", rec.court or source.agency),
         ("Jurisdiction", f"{source.level}/{rec.jurisdiction}"), ("Case number", rec.case_number),
         ("Record identifier", rec.record_id), ("Case title as published", rec.title),
@@ -115,18 +136,33 @@ def _finding(rec: CourtRecord, source: OfficialSource, query: str) -> Finding:
 
 def investigate(target: str, *, search_kind: str = "name", outcomes: list[SearchOutcome] | None = None,
                 selected: list[CourtRecord] | None = None, manual_records: list[dict] | None = None,
-                source_ids: list[str] | None = None) -> ModuleResult:
+                source_ids: list[str] | None = None, jurisdiction=None,
+                coverage: cov.CoverageReport | None = None) -> ModuleResult:
+    """`jurisdiction`: None/'US' = nationwide request, 'NC'/'North Carolina' = one state, or a Jurisdiction.
+    `outcomes`/`coverage` may be supplied by a caller that already ran the searches (the CLI does)."""
     term, err = validate_query(target, search_kind)
     result = ModuleResult("court", term or clean_text(target, 160))
     if err:
         result.errors.append(err)
         return result
+    jur, jerr = resolve_jurisdiction(jurisdiction)
+    if jerr:
+        result.errors.append(jerr)
+        return result
     if outcomes is None:
-        outcomes = run_searches(term, search_kind, source_ids)
+        if source_ids is None:
+            outcomes, coverage = search(term, search_kind, jur)
+        else:
+            outcomes = run_searches(term, search_kind, source_ids)
+    if coverage is None:
+        pl = cov.plan(COURT_SOURCES, jur, "court") if source_ids is None else None
+        coverage = cov.build_report("court", jur, search_kind, pl, outcomes)
+    cstatus = {e.provider_id: e.status for e in coverage.entries}
     result.notes.append(f"Search type: {search_kind}. Purpose: audit of public court records for an authorized subject. "
                         "Records below were attached by the operator after manual review.")
+    result.notes.extend(coverage_notes(coverage))
     for o in outcomes:
-        result.sources.append(source_record(o))
+        result.sources.append(source_record(o, cstatus.get(o.source.id, "")))
         if o.status == "error":
             result.errors.append(f"{o.source.name}: {o.detail}")
         elif o.status == "not_configured":
@@ -167,7 +203,7 @@ def investigate(target: str, *, search_kind: str = "name", outcomes: list[Search
                     source_url=rec.source_url, limitations="Check the official record; one entry may be outdated or mistyped."))
             continue
         seen[k] = rec
-        result.add(_finding(rec, source, term))
+        result.add(_finding(rec, source, term, coverage))
 
     unattached = max(0, returned - len([1 for r, _ in chosen if r.origin == "automated"]))
     if unattached:

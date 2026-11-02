@@ -104,10 +104,35 @@ could not be read, so it is not used. Searches that the portals offer by address
 deliberately **not** supported; TRACEPOINT accepts only a person's name, a case number (courts) or a registry
 identification number (registries).
 
-**Workflow.** Pick a jurisdiction and an official source, enter a name or number, confirm authorization, then either
-review automated candidates or open the official page (TRACEPOINT shows the URL and can open it in your browser) and
-type in what you reviewed. Each record needs your explicit confirmation before it is attached. The search itself is
-saved to History even when nothing is attached.
+**Jurisdiction selection.** Menu 16 and 17 start with *United States (Nationwide)*, *Select a State* and *Federal Courts*
+(in the registry module the third option is the National Registry, NSOPW). For a state, type a two-letter postal code
+or a full name in any case (`nc`, `NC`, `north carolina`, ` Texas `, `DC`, `Washington DC`); invalid input is
+explained and you can try again. All 50 states and the District of Columbia can be *selected*. **Selecting a state is not
+the same as having a provider for it.** Only North Carolina (manual portals) and the federal/national sources are
+catalogued; every other state is reported as `NOT IMPLEMENTED` and nothing is searched there.
+
+| Scope | Court Records searches | Registry searches |
+|---|---|---|
+| United States (nationwide) | every catalogued source: GovInfo (automated), PACER (manual), NC Judicial Branch (manual); 50 other jurisdictions `NOT IMPLEMENTED` | NSOPW and NC SBI (both manual); 50 other jurisdictions `NOT IMPLEMENTED` |
+| A state (e.g. NC) | that state's state/county sources only; federal courts are a separate jurisdiction. No county sources are catalogued | that state's registry plus NSOPW (the manual national route into any state) |
+| Federal Courts / National | GovInfo, PACER | NSOPW |
+
+**Search coverage.** Every search produces a coverage report generated from what really happened, with one status per
+provider: `SEARCHED`, `MANUAL`, `UNAVAILABLE`, `NOT IMPLEMENTED`, `FAILED` or `SKIPPED`, plus a reason, the official URL and a
+retrieval time. The overall status is `NONE` (nothing was searched automatically), `PARTIAL`, or `COMPLETE`
+(only if every provider in scope was searched, each claims complete coverage, and no jurisdiction lacks a provider; no
+catalogued source claims completeness, so today the best result is `PARTIAL`). A *nationwide request* is recorded and
+reported as a request, never as nationwide coverage, and a search that returns zero records is never proof that no
+records exist. The scope, resolved jurisdiction, search method, provider status, coverage and source URLs are saved with
+the investigation (in its notes, sources and finding evidence; no schema change) and appear in TXT/HTML/JSON reports.
+Investigations saved before this feature show coverage as `NOT RECORDED`.
+
+**Workflow.** Choose a jurisdiction; TRACEPOINT lists the available official sources (automated and manual apart),
+you choose *name* or *case number / registry ID*, enter the term and confirm authorization. Automated providers run
+and their candidates are listed with the provider that returned them. Manual providers are shown with their official
+URL, authentication and fees; TRACEPOINT never claims to have searched them, and you can open the page and type in what
+you reviewed. Each record needs your explicit confirmation before it is attached. The search and its coverage report
+are saved to History even when nothing is attached.
 
 **Classification rules.** The source's own wording is always stored next to TRACEPOINT's normalized value.
 Court statuses: `PENDING`, `DISMISSED`, `CONVICTED`, `ACQUITTED`, `DEFERRED`, `SEALED / UNAVAILABLE`, `UNKNOWN`; only
@@ -127,9 +152,11 @@ unverified name matches, reviewed records, missing information, inaccessible sou
 Use is limited to authorized subjects and public-safety awareness; threatening, harassing or intimidating anyone is
 prohibited by the registries' terms and may be prosecuted.
 
-**Adding a jurisdiction.** Add an `OfficialSource` (agency, URLs, method, supported fields, authentication, coverage,
-verification note) to `providers/court_sources.py` or `providers/registry_sources.py`. Mark it `automated` only when the
-agency documents a non-interactive search that permits it, and add a searcher with mocked-response tests.
+**Adding a jurisdiction's provider.** Add an `OfficialSource` (agency, `jurisdiction` postal code, `level` of
+`state` or `county`, URLs, method, supported fields, authentication, coverage, verification note) to
+`providers/court_sources.py` or `providers/registry_sources.py`; the jurisdiction menu, provider discovery and coverage
+reporting pick it up automatically. Mark it `automated` only when the agency documents a non-interactive search that
+permits it, and add a searcher with mocked-response tests. Do not add a URL you have not checked.
 
 ## Confidence grades
 

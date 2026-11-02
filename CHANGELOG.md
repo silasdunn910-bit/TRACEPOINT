@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased (Phase 8, part 2: jurisdiction selection and search coverage)
+- Court Records and Sex Offender Registry open with a *Jurisdiction Selection* menu: United States (Nationwide), Select a State, Federal Courts (National Registry in the registry module). States accept postal codes or full names, any case, surrounding whitespace; all 50 states and DC; invalid input is explained and can be retried.
+- Provider discovery per jurisdiction (federal, state, county where catalogued); automated and manual sources are shown separately. No provider, county source or endpoint was added or guessed: only North Carolina and the federal/national sources exist.
+- New search-method screen (name / case number or registry ID) before the search term; names with spaces, hyphens, apostrophes and Unicode are accepted; case numbers are validated separately.
+- Every search generates a coverage report from actual provider execution: `SEARCHED`, `MANUAL`, `UNAVAILABLE`, `NOT IMPLEMENTED`, `FAILED`, `SKIPPED`, with overall `NONE` / `PARTIAL` / `COMPLETE`. A nationwide request is never reported as nationwide coverage; zero records is never reported as proof of absence.
+- Scope, resolved jurisdiction, provider, search method, coverage status, source URLs and retrieval times are saved with each investigation (notes, sources, finding evidence; no schema change) and shown in reports. Older investigations show coverage as `NOT RECORDED`.
+- `modules/*_intel.investigate()` accepts `jurisdiction=`; new `plan()` and `search()` helpers. A provider that raises is recorded as `FAILED` instead of aborting the search.
+- Existing CLI scripts for menu 16/17 must use the new prompt order (jurisdiction menu, state, method, term).
+
 ## Unreleased (Phase 8)
 
 ### Court Records Intelligence and Sex Offender Registry Intelligence (menu 16, 17)

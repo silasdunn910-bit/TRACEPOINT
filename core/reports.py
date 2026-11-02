@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from core import correlation
 from core.configuration import APP_NAME, REPORTS_DIR, VERSION
 from core.database import get_db
+from providers.coverage import parse_marker
 from core.models import CONFIDENCE_LEVELS, CONFIDENCE_MEANING, normalize_confidence, now_iso
 
 STANDING_LIMITS = [
@@ -22,7 +23,8 @@ STANDING_LIMITS = [
 ]
 
 
-def _records_review(inv_type: str, findings: list[dict], sources: list[dict], contra: list[str]) -> dict | None:
+def _records_review(inv_type: str, findings: list[dict], sources: list[dict], contra: list[str],
+                    coverage=None) -> dict | None:
     """Court / registry investigations: separate what the official sources said from what is unverified,
     reviewed, missing, inaccessible, conflicting or only partially covered."""
     if inv_type not in ("court", "registry"):
@@ -37,7 +39,20 @@ def _records_review(inv_type: str, findings: list[dict], sources: list[dict], co
         if gaps:
             missing.append(f"{f['title']}: {', '.join(gaps)}")
     kind = "court records" if inv_type == "court" else "registry listings"
+    if coverage is not None:
+        scope_note = (f"Requested: {coverage.requested} ({coverage.scope}). Resolved: {coverage.resolved}. "
+                      f"Actual coverage: {coverage.status}."
+                      + (" This was a NATIONWIDE REQUEST, not nationwide coverage: only the providers marked SEARCHED "
+                         "were searched." if coverage.scope == "nationwide" and not coverage.complete_nationwide else ""))
+        cov_block = {"requested": coverage.requested, "scope": coverage.scope, "resolved": coverage.resolved,
+                     "search_method": coverage.search_method, "status": coverage.status, "summary": scope_note,
+                     "counts": coverage.counts(), "lines": coverage.lines(),
+                     "providers": [{k: v for k, v in e.__dict__.items()} for e in coverage.entries]}
+    else:
+        cov_block = {"status": "NOT RECORDED", "summary": "This investigation predates jurisdiction and coverage recording; "
+                     "the scope of the search was not stored.", "lines": [], "providers": []}
     return {
+        "search_coverage": cov_block,
         "official_source_information": [f"{f['source']}: {f['value']} <{f['source_url'] or 'no URL recorded'}>" for f in recs],
         "unverified_name_matches": f"{sum(1 for f in recs if f['confidence'] == 'UNVERIFIED')} of {len(recs)} {kind} "
                                    "are UNVERIFIED name/identifier matches; none is a confirmed record of the person searched.",
@@ -63,6 +78,7 @@ def build(inv_id: int) -> dict:
     for f in findings:  # present legacy grades (STRONG) under the current taxonomy; stored data is untouched
         f["confidence"] = normalize_confidence(f["confidence"])
     sources = [dict(s) for s in db.sources(inv_id)]
+    coverage, public_notes = parse_marker(inv["notes"])
     ents = [dict(e) for e in db.entities_for(inv_id)]
     rels = [dict(r) for r in db.relationships_for(inv_id)]
     counts = Counter(normalize_confidence(f["confidence"]) for f in findings)
@@ -86,7 +102,7 @@ def build(inv_id: int) -> dict:
     return {
         "report_generated": now_iso(), "generator": f"{APP_NAME} {VERSION}",
         "investigation": {"id": inv["ref"], "type": inv["inv_type"], "target": inv["target"],
-                          "timestamp": inv["created_at"], "status": inv["status"], "notes": inv["notes"]},
+                          "timestamp": inv["created_at"], "status": inv["status"], "notes": public_notes},
         "sources_consulted": sources, "findings": findings, "confidence_counts": dict(counts),
         "confidence_definitions": CONFIDENCE_MEANING, "related_entities": ents, "relationships": rels,
         "geographic_evidence": [f for f in findings if f["category"] == "geo"], "contradictions": contra,
@@ -94,7 +110,7 @@ def build(inv_id: int) -> dict:
         + [f"Source blocked automated checks: {s['name']} — {s['detail']}" for s in blocked]
                        + [f"Not configured: {s['name']}" for s in not_cfg],
         "conclusion": conclusion, "ai_analysis": inv["ai_summary"] or "",
-        "records_review": _records_review(inv["inv_type"], findings, sources, contra),
+        "records_review": _records_review(inv["inv_type"], findings, sources, contra, coverage),
     }
 
 
@@ -109,7 +125,9 @@ def to_txt(r: dict) -> str:
     rr = r.get("records_review")
     if rr:
         out += ["RECORDS REVIEW (official sources vs. unverified matches)", "-" * 78,
-                rr["unverified_name_matches"], rr["manually_reviewed_records"], "",
+                "SEARCH SCOPE AND COVERAGE", rr["search_coverage"]["summary"]]
+        out += [f"  {ln}" for ln in rr["search_coverage"]["lines"]] + [""]
+        out += [rr["unverified_name_matches"], rr["manually_reviewed_records"], "",
                 "Official source information:"] + [f"  - {x}" for x in rr["official_source_information"] or ["none attached"]]
         out += ["Missing information:"] + [f"  - {x}" for x in rr["missing_information"]]
         out += ["Inaccessible or manual-only sources:"] + [f"  - {x}" for x in rr["inaccessible_sources"] or ["none"]]
@@ -202,7 +220,10 @@ def to_html(r: dict) -> str:
     if rr:
         def ul(items):
             return "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in items) + "</ul>"
+        sc = rr["search_coverage"]
         rr_html = ("<section><h2>Records review</h2><div class=\"concl\">"
+                   f"<b>Search scope and coverage: {esc(sc['status'])}</b><p>{esc(sc['summary'])}</p>"
+                   + ul(sc["lines"]) +
                    f"<p>{esc(rr['unverified_name_matches'])}</p><p>{esc(rr['manually_reviewed_records'])}</p>"
                    "<b>Official source information</b>" + ul(rr["official_source_information"] or ["none attached"]) +
                    "<b>Missing information</b>" + ul(rr["missing_information"]) +

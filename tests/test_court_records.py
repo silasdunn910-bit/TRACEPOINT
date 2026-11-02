@@ -473,7 +473,7 @@ def test_menu_keeps_existing_options_and_adds_court_and_registry():
 def test_cli_court_workflow_manual_source_saves_reviewed_record(monkeypatch):
     fields = [MANUAL[k] for k in ("title", "case_number", "court", "record_type", "original_status", "charges",
                                   "filing_date", "disposition_date", "source_url")]
-    main, buf = _drive(monkeypatch, ["NC", "1", "name", NAME] + fields + ["back"],
+    main, buf = _drive(monkeypatch, ["2", "NC", "1", NAME, "1"] + fields + ["", "back"],
                        [True, False, True, False])   # authorize, open browser?, enter record, enter another?
     before = len(get_db().list_investigations(500))
     main.court_records_flow()
@@ -488,22 +488,22 @@ def test_cli_court_workflow_manual_source_saves_reviewed_record(monkeypatch):
 
 
 def test_cli_court_workflow_declined_authorization_saves_nothing(monkeypatch):
-    main, buf = _drive(monkeypatch, ["NC", "1", "name", NAME], [False])
+    main, buf = _drive(monkeypatch, ["2", "NC", "1", NAME], [False])
     before = len(get_db().list_investigations(500))
     main.court_records_flow()
     assert len(get_db().list_investigations(500)) == before and "authorization not given" in flat(buf.getvalue())
 
 
 def test_cli_court_workflow_rejects_an_invalid_name_before_any_search(monkeypatch):
-    main, buf = _drive(monkeypatch, ["US", "1", "name", "Cher"], [])
+    main, buf = _drive(monkeypatch, ["1", "1", "Cher"], [])
     main.court_records_flow()
     assert "full name" in flat(buf.getvalue()).lower()
 
 
 def test_cli_court_workflow_attaches_only_confirmed_candidates(monkeypatch, keyed):
     fake_http(monkeypatch, Resp(payload={"results": [item(1), item(2), item(3)]}))
-    # US -> source 1 (GovInfo, automated) -> name -> attach #1 and #3, confirm only #3 -> no manual entry -> back
-    main, buf = _drive(monkeypatch, ["US", "1", "name", NAME, "1,3", "back"], [True, False, True, False])
+    # nationwide -> name -> GovInfo (automated) returns 3 -> attach #1 and #3, confirm only #3 -> no manual entry -> back
+    main, buf = _drive(monkeypatch, ["1", "1", NAME, "1,3", "", "back"], [True, False, True])
     main.court_records_flow()
     inv = get_db().list_investigations(500)[0]
     vals = [f["value"] for f in get_db().findings(inv["id"])]

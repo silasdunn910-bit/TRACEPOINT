@@ -319,7 +319,7 @@ def test_menu_has_registry_option_without_disturbing_existing_ones():
 def test_cli_registry_workflow_records_a_reviewed_listing(monkeypatch):
     fields = [MANUAL[k] for k in ("displayed_name", "registry_id", "original_status", "offense_classification",
                                   "registration_date", "source_updated", "source_url")]
-    main, buf = _drive(monkeypatch, ["NC", "1", "name", NAME] + fields + ["back"], [True, False, True, False])
+    main, buf = _drive(monkeypatch, ["2", "NC", "1", NAME, "2"] + fields + ["", "back"], [True, False, True, False])
     before = len(get_db().list_investigations(500))
     main.registry_flow()
     rows = get_db().list_investigations(500)
@@ -332,13 +332,13 @@ def test_cli_registry_workflow_records_a_reviewed_listing(monkeypatch):
 
 
 def test_cli_registry_declined_authorization_saves_nothing(monkeypatch):
-    main, buf = _drive(monkeypatch, ["US", "1", "name", NAME], [False])
+    main, buf = _drive(monkeypatch, ["1", "1", NAME], [False])
     before = len(get_db().list_investigations(500))
     main.registry_flow()
     assert len(get_db().list_investigations(500)) == before
 
 
 def test_cli_registry_rejects_location_style_input_as_a_name(monkeypatch):
-    main, buf = _drive(monkeypatch, ["US", "1", "name", "27601"], [])
+    main, buf = _drive(monkeypatch, ["1", "1", "27601"], [])
     main.registry_flow()
     assert "full name" in flat(buf.getvalue()).lower()

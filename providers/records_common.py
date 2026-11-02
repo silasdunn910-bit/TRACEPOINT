@@ -55,6 +55,7 @@ class OfficialSource:
     official_domains: tuple[str, ...]
     verified_note: str              # what was actually verified, and when
     requires_secret: str = ""       # name of the stored credential, if any
+    kinds: tuple[str, ...] = ()     # search kinds the source can take; empty = every kind the module offers
 
     @property
     def automated(self) -> bool:
@@ -65,8 +66,9 @@ class OfficialSource:
 class SearchOutcome:
     """Result of asking one source. `records` are unreviewed candidates, not findings."""
     source: OfficialSource
-    status: str                     # ok | error | manual | not_configured
+    status: str                     # ok | error | manual | not_configured | skipped
     detail: str = ""
+    error_kind: str = ""            # "unavailable" when an error is a reachability problem (offline, timeout, 5xx, 429)
     records: list = field(default_factory=list)
     query: str = ""
     query_kind: str = ""
