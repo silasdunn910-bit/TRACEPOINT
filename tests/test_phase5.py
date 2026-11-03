@@ -201,7 +201,12 @@ def test_migration_on_copy_of_real_database_preserves_records(tmp_path):
               for t in ("investigations", "findings", "entities", "relationships", "sources", "reports")}
     ro.close()
     copy = tmp_path / "copy.db"
-    shutil.copy(src, copy)
+    # sqlite backup API: a plain file copy of a WAL-mode database silently omits data still in the -wal file
+    ro = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
+    dst = sqlite3.connect(copy)
+    ro.backup(dst)
+    dst.close()
+    ro.close()
     d = Database(copy)
     for t, n in before.items():
         assert d.q(f"SELECT COUNT(*) c FROM {t}")[0]["c"] == n, t

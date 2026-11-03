@@ -124,6 +124,7 @@ class ModuleResult:
     sources: list[SourceRecord] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    stages: list[dict] = field(default_factory=list)   # workflow stage records (core.workflow), set by investigation.run
 
     # helpers -------------------------------------------------------------
     def add(self, finding: Finding) -> Finding:

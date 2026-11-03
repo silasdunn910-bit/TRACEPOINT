@@ -103,6 +103,7 @@ def build(inv_id: int) -> dict:
         "report_generated": now_iso(), "generator": f"{APP_NAME} {VERSION}",
         "investigation": {"id": inv["ref"], "type": inv["inv_type"], "target": inv["target"],
                           "timestamp": inv["created_at"], "status": inv["status"], "notes": public_notes},
+        "workflow": [dict(s) for s in db.stages(inv_id)], "source_registry": [dict(s) for s in db.source_registry(inv_id)],
         "sources_consulted": sources, "findings": findings, "confidence_counts": dict(counts),
         "confidence_definitions": CONFIDENCE_MEANING, "related_entities": ents, "relationships": rels,
         "geographic_evidence": [f for f in findings if f["category"] == "geo"], "contradictions": contra,
@@ -277,9 +278,14 @@ For auditing identifiers the operator owns or is authorized to investigate.</foo
 
 
 def save(inv_id: int, fmt: str) -> Path:
+    """Export a report. txt/json/html: evidence report. md/pdf: the Intelligence Report (core.intelligence),
+    which is built from this module's build() output."""
+    fmt = fmt.lower()
+    if fmt in ("md", "pdf"):
+        from core import intelligence  # late import: the engine imports this module
+        return intelligence.export(inv_id, fmt)
     r = build(inv_id)
     ref = r["investigation"]["id"]
-    fmt = fmt.lower()
     body = {"txt": to_txt, "json": to_json, "html": to_html}[fmt](r)
     path = REPORTS_DIR / f"{ref}.{fmt}"
     path.write_text(body, encoding="utf-8")

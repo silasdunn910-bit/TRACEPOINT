@@ -8,7 +8,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "TRACEPOINT"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 # TRACEPOINT_HOME relocates all data (database, reports, logs, config, backups). The test suite
 # sets it to a temporary directory so tests can never touch the real investigation data.

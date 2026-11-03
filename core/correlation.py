@@ -51,7 +51,7 @@ def detect_type(value: str) -> tuple[str, str]:
             pass
     if DOMAIN_RE.match(v):
         return "domain", "looks like a hostname with a TLD"
-    if re.fullmatch(r"[A-Za-z][A-Za-z'.-]+(\s+[A-Za-z][A-Za-z'.-]+){1,4}", v):
+    if re.fullmatch(r"[A-Za-z][A-Za-z'.-]+(\s+[A-Za-z][A-Za-z'.-]*){1,4}", v):
         return "name", "two or more words of letters"
     if re.fullmatch(r"@?[A-Za-z0-9._-]{2,40}", v):
         return "username", "single token of handle characters"

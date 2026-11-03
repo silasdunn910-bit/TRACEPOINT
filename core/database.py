@@ -129,6 +129,58 @@ MIGRATIONS: list[str] = [
     ALTER TABLE findings ADD COLUMN source_type TEXT DEFAULT '';
     ALTER TABLE findings ADD COLUMN published_at TEXT DEFAULT '';
     """,
+    # v3: stored Intelligence Reports (snapshot generated when an investigation completes; reopenable).
+    """
+    CREATE TABLE intel_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        investigation_id INTEGER NOT NULL REFERENCES investigations(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        engine_version TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX idx_intel_reports_inv ON intel_reports(investigation_id);
+    """,
+    # v4: workflow stage records, persisted source registry (deduplicated per investigation), extra indexes.
+    # Additive only: no existing table is altered or recreated.
+    """
+    CREATE TABLE investigation_stages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        investigation_id INTEGER NOT NULL REFERENCES investigations(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL,
+        stage TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        UNIQUE(investigation_id, stage)
+    );
+    CREATE TABLE source_registry (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        investigation_id INTEGER NOT NULL REFERENCES investigations(id) ON DELETE CASCADE,
+        source_key TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        url TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL DEFAULT '',
+        retrieved_at TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT '',
+        http_status TEXT NOT NULL DEFAULT '',
+        consulted INTEGER NOT NULL DEFAULT 0,
+        reliability TEXT NOT NULL DEFAULT '',
+        finding_count INTEGER NOT NULL DEFAULT 0,
+        finding_ids TEXT NOT NULL DEFAULT '',
+        UNIQUE(investigation_id, source_key)
+    );
+    CREATE INDEX idx_stages_inv ON investigation_stages(investigation_id);
+    CREATE INDEX idx_source_registry_inv ON source_registry(investigation_id);
+    CREATE INDEX idx_sources_inv ON sources(investigation_id);
+    CREATE INDEX idx_findings_source_url ON findings(source_url);
+    CREATE INDEX idx_findings_category ON findings(category, confidence);
+    CREATE INDEX idx_investigations_type ON investigations(inv_type, created_at);
+    CREATE INDEX idx_history_inv ON search_history(investigation_id);
+    CREATE INDEX idx_reports_inv ON reports(investigation_id);
+    """,
 ]
 
 
@@ -149,9 +201,18 @@ class Database:
             self.conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
             row = self.conn.execute("SELECT MAX(version) v FROM schema_version").fetchone()
             current = row["v"] or 0
+            if 0 < current < len(MIGRATIONS) and self.conn.execute("SELECT COUNT(*) FROM investigations").fetchone()[0]:
+                try:  # safety copy of existing data before any schema change
+                    self.backup()
+                except Exception:  # noqa: BLE001 - never block start-up on a backup problem
+                    pass
             for i, sql in enumerate(MIGRATIONS, start=1):
                 if i > current:
-                    self.conn.executescript("BEGIN;" + sql + f"INSERT INTO schema_version VALUES ({i});COMMIT;")
+                    try:
+                        self.conn.executescript("BEGIN;" + sql + f"INSERT INTO schema_version VALUES ({i});COMMIT;")
+                    except BaseException:
+                        self.conn.rollback()   # a failed step leaves the database at its previous version
+                        raise
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT MAX(version) v FROM schema_version").fetchone()["v"] or 0
@@ -193,23 +254,23 @@ class Database:
             return cur.lastrowid
 
     # -- investigations -------------------------------------------------------
-    def save_result(self, inv_type: str, target: str, result: ModuleResult) -> int:
+    def save_result(self, inv_type: str, target: str, result: ModuleResult, status: str = "") -> int:
         """Persist a result atomically: any failure rolls back so no partial investigation is kept
         (and cannot be committed later by an unrelated write on this connection)."""
         with self._lock:
             try:
-                return self._save_result(inv_type, target, result)
+                return self._save_result(inv_type, target, result, status)
             except BaseException:
                 self.conn.rollback()
                 raise
 
-    def _save_result(self, inv_type: str, target: str, result: ModuleResult) -> int:
+    def _save_result(self, inv_type: str, target: str, result: ModuleResult, status: str = "") -> int:
         ts = now_iso()
         ref = "TP-" + datetime.now().strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:6].upper()
         with self._lock:
             cur = self.conn.execute(
                 "INSERT INTO investigations(ref,inv_type,target,status,created_at,updated_at,notes) VALUES (?,?,?,?,?,?,?)",
-                (ref, inv_type, target, "complete" if not result.errors else "complete_with_errors", ts, ts,
+                (ref, inv_type, target, status or ("complete" if not result.errors else "complete_with_errors"), ts, ts,
                  redact("\n".join(result.notes))))
             inv_id = cur.lastrowid
             for s in result.sources:
@@ -309,6 +370,65 @@ class Database:
             d["path"], d["exists"] = str(p), p.is_file()
             out.append(d)
         return out
+
+    # -- intelligence reports ---------------------------------------------------------
+    def save_intel_report(self, inv_id: int, status: str, engine_version: str, payload: str, error: str = "") -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO intel_reports(investigation_id,status,engine_version,generated_at,payload,error) "
+                "VALUES (?,?,?,?,?,?)", (inv_id, status, engine_version, now_iso(), payload, redact(error)))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def latest_intel_report(self, inv_id: int) -> sqlite3.Row | None:
+        rows = self.q("SELECT * FROM intel_reports WHERE investigation_id=? ORDER BY id DESC LIMIT 1", (inv_id,))
+        return rows[0] if rows else None
+
+    def list_intel_reports(self, limit: int = 60) -> list[sqlite3.Row]:
+        """Latest intelligence report per investigation (without the payload), newest first."""
+        return self.q("""SELECT r.id, r.investigation_id, r.status, r.engine_version, r.generated_at, r.error,
+                         i.ref, i.inv_type, i.target
+                         FROM intel_reports r JOIN investigations i ON i.id=r.investigation_id
+                         WHERE r.id IN (SELECT MAX(id) FROM intel_reports GROUP BY investigation_id)
+                         ORDER BY r.id DESC LIMIT ?""", (limit,))
+
+    # -- workflow stages & source registry ----------------------------------------------
+    def save_stages(self, inv_id: int, stages: list[dict]) -> None:
+        """Insert or update stage records (idempotent per investigation + stage)."""
+        with self._lock:
+            for seq, st in enumerate(stages, 1):
+                self.conn.execute(
+                    """INSERT INTO investigation_stages(investigation_id,seq,stage,status,started_at,finished_at,detail)
+                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(investigation_id,stage) DO UPDATE SET
+                    seq=excluded.seq,status=excluded.status,started_at=excluded.started_at,
+                    finished_at=excluded.finished_at,detail=excluded.detail""",
+                    (inv_id, seq, st["stage"], st["status"], st["started_at"], st.get("finished_at", ""),
+                     redact(st.get("detail", ""))[:1000]))
+            self.conn.commit()
+
+    def stages(self, inv_id: int) -> list[sqlite3.Row]:
+        return self.q("SELECT * FROM investigation_stages WHERE investigation_id=? ORDER BY seq", (inv_id,))
+
+    def replace_source_registry(self, inv_id: int, records: list[dict]) -> None:
+        """The registry is derived from stored sources/findings, so it is rebuilt atomically per investigation."""
+        with self._lock:
+            try:
+                self.conn.execute("DELETE FROM source_registry WHERE investigation_id=?", (inv_id,))
+                for r in records:
+                    self.conn.execute(
+                        """INSERT OR IGNORE INTO source_registry(investigation_id,source_key,provider,url,category,
+                        retrieved_at,status,http_status,consulted,reliability,finding_count,finding_ids)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (inv_id, r["source_key"], r["provider"], r["url"], r["category"], r["retrieved_at"],
+                         r["status"], r["http_status"], 1 if r["consulted"] else 0, r["reliability"],
+                         r["finding_count"], r["finding_ids"]))
+                self.conn.commit()
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    def source_registry(self, inv_id: int) -> list[sqlite3.Row]:
+        return self.q("SELECT * FROM source_registry WHERE investigation_id=? ORDER BY id", (inv_id,))
 
     def search_history(self, limit: int = 30) -> list[sqlite3.Row]:
         return self.q("SELECT * FROM search_history ORDER BY id DESC LIMIT ?", (limit,))

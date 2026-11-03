@@ -17,13 +17,13 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from core import ai, correlation, investigation, reports
+from core import ai, correlation, intelligence, investigation, reports
 from core.configuration import API_INTEGRATIONS, APP_NAME, REPORTS_DIR, VERSION
 from core.database import get_db
 from core.investigation import SPECS
 from core.models import ModuleResult
 from core.security import clean_input, encryption_mode, mask
-from ui import render
+from ui import render, report_view
 from ui.theme import BANNER, THEME
 
 console = Console(theme=THEME, highlight=False)
@@ -39,7 +39,7 @@ MENU = [
 ACTIONS = [
     ("9", "universal", "Universal Search  [tp.dim](auto-detect identifier)[/tp.dim]"),
     ("10", "graph", "Relationship Explorer"), ("11", "history", "Investigation History"),
-    ("12", "reports", "Reports"), ("13", "api", "API Configuration"),
+    ("12", "reports", "Reports"), ("19", "intel", "Intelligence Reports"), ("13", "api", "API Configuration"),
     ("18", "integrations", "Integrations Dashboard"), ("14", "settings", "Settings"), ("15", "ai", "AI Analyst Status"), ("0", "exit", "Exit"),
 ]
 
@@ -154,15 +154,24 @@ def run_and_show(inv_type: str, target: str, **kwargs):
     if shown_notes:
         console.print(Panel("\n".join(f"• {escape(n)}" for n in shown_notes), title="[tp.dim]NOTES[/tp.dim]",
                             border_style="tp.rule"))
-    console.print(f"[tp.ok]✓ Saved as investigation {db.get_investigation(inv_id)['ref']} (id {inv_id}).[/tp.ok]")
+    saved = db.get_investigation(inv_id)
+    if saved["status"] == "failed":
+        console.print(Panel("The investigation module failed before completing. The failure was recorded; nothing here "
+                            "is a search result, and no conclusion should be drawn from it.",
+                            title="[tp.err]INVESTIGATION FAILED[/tp.err]", border_style="tp.err"))
+    console.print(f"[tp.ok]✓ Saved as investigation {saved['ref']} (id {inv_id}) - status: {saved['status']}.[/tp.ok]")
+    # investigation.run() has already generated and stored the intelligence report (or a FAILED record)
+    console.print(report_view.brief_panel(*intelligence.load_latest(inv_id)))
     post_investigation(inv_id)
 
 
 def post_investigation(inv_id: int):
     while True:
-        choice = Prompt.ask("\n[tp.accent]Action[/tp.accent]", choices=["report", "ai", "graph", "back"],
+        choice = Prompt.ask("\n[tp.accent]Action[/tp.accent]", choices=["intel", "report", "ai", "graph", "back"],
                             default="back", console=console)
-        if choice == "report":
+        if choice == "intel":
+            intel_report_view(inv_id)
+        elif choice == "report":
             do_report(inv_id)
         elif choice == "ai":
             do_ai(inv_id)
@@ -236,6 +245,17 @@ def _name_routing_screen(name_query: str):
             continue
 
 
+def _warn_if_no_search_provider(itype: str) -> None:
+    """Identifier types that rely on public web search: say up front when only the best-effort fallback exists."""
+    if itype not in ("name", "username", "email", "phone", "court", "registry", "social"):
+        return
+    from core import search_engine
+    if not any(p.requires_key for p in search_engine.active_providers()):
+        console.print("[tp.warn]No search provider (Brave / Google / SearXNG) is configured. Web-search results use the "
+                      "DuckDuckGo fallback, which may be rate-limited or blocked; if it fails the report will say the "
+                      "search did not run. Configure one in API Configuration (item 13), then press 't' to test it.[/tp.warn]")
+
+
 def universal_search():
     while True:
         target = ask("Enter any identifier", "email / phone / IP / domain / profile URL")
@@ -256,6 +276,7 @@ def universal_search():
                 continue
             return
         if itype in SPECS:
+            _warn_if_no_search_provider(itype)
             console.print(f"[tp.ok]Detected:[/tp.ok] [tp.accent]{SPECS[itype].label}[/tp.accent] [tp.dim]({reason})[/tp.dim]")
             if Confirm.ask("Proceed?", default=True, console=console):
                 run_and_show(itype, target)  # save_result() records this in search_history
@@ -352,11 +373,68 @@ def relationship_explorer():
 
 
 def do_report(inv_id: int):
-    fmt = Prompt.ask("Format", choices=["txt", "json", "html", "all"], default="html", console=console)
-    fmts = ["txt", "json", "html"] if fmt == "all" else [fmt]
+    console.print("[tp.dim]pdf / md: Intelligence Report.  txt / json / html: evidence report.[/tp.dim]")
+    fmt = Prompt.ask("Format", choices=["pdf", "md", "txt", "json", "html", "all"], default="pdf", console=console)
+    fmts = ["pdf", "md", "txt", "json", "html"] if fmt == "all" else [fmt]
     for f in fmts:
-        p = reports.save(inv_id, f)
+        try:
+            p = reports.save(inv_id, f)
+        except intelligence.ReportUnavailable as e:
+            console.print(f"[tp.err]Intelligence report unavailable: {escape(str(e))}[/tp.err]")
+            continue
         console.print(f"[tp.ok]✓ {p}[/tp.ok]")
+
+
+def intel_report_view(inv_id: int):
+    """Intelligence Report view: reopen the stored report, follow evidence links, export, or regenerate."""
+    report, row = intelligence.open_or_generate(inv_id)
+    shown = False
+    while True:
+        if report is None:
+            console.print(report_view.brief_panel(None, row))
+            if Confirm.ask("Try generating the report again?", default=False, console=console):
+                intelligence.generate_and_store(inv_id)
+                report, row = intelligence.load_latest(inv_id)
+                continue
+            return
+        if not shown:
+            style = report_view.STATUS_STYLE.get(report.status, "tp.rule")
+            console.print(Panel(report_view.document(report), border_style=style,
+                                title=f"[tp.head]INTELLIGENCE REPORT · {escape(report.overview['reference'])}[/tp.head]",
+                                subtitle=f"[tp.dim]generated {escape(row['generated_at'])}[/tp.dim]"))
+            shown = True
+        sel = ask("E#/S# open evidence | pdf | md | regenerate | blank to return")
+        if not sel:
+            return
+        cmd = sel.strip().lower()
+        if cmd in intelligence.EXPORT_FORMATS:
+            console.print(f"[tp.ok]✓ {intelligence.export(inv_id, cmd, report)}[/tp.ok]")
+        elif cmd == "regenerate":
+            intelligence.generate_and_store(inv_id)
+            report, row = intelligence.load_latest(inv_id)
+            shown = False
+        else:
+            panel = report_view.evidence_panel(report, sel)
+            console.print(panel if panel else "[tp.warn]No such evidence or source reference.[/tp.warn]")
+
+
+def intel_reports_menu():
+    console.print(Rule("[tp.head]INTELLIGENCE REPORTS[/tp.head]", style="tp.rule"))
+    console.print("[tp.dim]A report is generated automatically when each investigation completes. Investigations "
+                  "saved before this feature get one the first time they are opened.[/tp.dim]")
+    rows = db.list_intel_reports(60)
+    if rows:
+        console.print(report_view.list_table(rows))
+    else:
+        console.print("[tp.dim]No intelligence reports yet.[/tp.dim]")
+    sel = ask("Open investigation id / ref (blank to return)")
+    if not sel:
+        return
+    inv = db.find_investigation(sel)
+    if not inv:
+        console.print("[tp.warn]Not found.[/tp.warn]")
+        return
+    intel_report_view(inv["id"])
 
 
 def do_ai(inv_id: int):
@@ -366,7 +444,7 @@ def do_ai(inv_id: int):
                             "TRACEPOINT works fully without AI.", title="[tp.warn]AI UNAVAILABLE[/tp.warn]",
                             border_style="tp.warn"))
         return
-    task = Prompt.ask("Analysis", choices=["summary", "relationships", "contradictions"], default="summary",
+    task = Prompt.ask("Analysis", choices=["summary", "executive", "patterns", "gaps", "relationships", "contradictions"], default="summary",
                       console=console)
     with console.status(f"[tp.accent]Local model {ai.selected_model(models)} analysing…[/tp.accent]", spinner="dots"):
         try:
@@ -421,9 +499,11 @@ def view_investigation(inv_id: int):
             console.print(f"      [tp.accent2 underline]{escape(f['source_url'])}[/tp.accent2 underline]")
     if inv["ai_summary"]:
         console.print(Panel(inv["ai_summary"], title="[tp.head]AI ANALYSIS[/tp.head]", border_style="tp.rule"))
-    action = Prompt.ask("\n[tp.accent]Action[/tp.accent]", choices=["report", "ai", "graph", "delete", "back"],
+    action = Prompt.ask("\n[tp.accent]Action[/tp.accent]", choices=["intel", "report", "ai", "graph", "delete", "back"],
                         default="back", console=console)
-    if action == "report":
+    if action == "intel":
+        intel_report_view(inv_id)
+    elif action == "report":
         do_report(inv_id)
     elif action == "ai":
         do_ai(inv_id)
@@ -439,7 +519,7 @@ def reports_menu():
     rows = db.reports()
     if rows:
         t = Table(box=None); t.add_column("Ref", style="tp.accent2"); t.add_column("Target", style="tp.val")
-        t.add_column("Format", width=6); t.add_column("Path", style="tp.dim")
+        t.add_column("Format", width=9); t.add_column("Path", style="tp.dim")
         for r in rows[:30]:
             t.add_row(r["ref"], r["target"][:34], r["format"], r["path"] + ("" if r["exists"] else " [missing]"))
         console.print(t)
@@ -873,7 +953,7 @@ def registry_flow():
 
 DISPATCH = {
     "universal": universal_search, "graph": relationship_explorer, "history": history,
-    "reports": reports_menu, "api": api_config, "integrations": integrations_dashboard, "settings": settings, "ai": ai_status_panel,
+    "reports": reports_menu, "intel": intel_reports_menu, "api": api_config, "integrations": integrations_dashboard, "settings": settings, "ai": ai_status_panel,
 }
 RECORD_FLOWS = {"court": court_records_flow, "registry": registry_flow}
 EXAMPLES = {"email": "you@example.com", "phone": "+1 415 555 2671", "username": "your_handle",

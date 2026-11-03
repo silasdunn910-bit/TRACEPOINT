@@ -62,7 +62,8 @@ The tests run against a temporary `TRACEPOINT_HOME` (database, reports, logs, co
 | 9 | **Universal Search** | Auto-detects the identifier type and routes names to Name Intelligence | depends |
 | 10 | **Relationship Explorer** | Entities shared across investigations, entity search, Cytoscape graph export | — |
 | 11 | **History** | Browse/open/delete past investigations (persisted) | — |
-| 12 | **Reports** | Generate TXT / JSON / HTML reports | — |
+| 12 | **Reports** | Export the Intelligence Report (PDF / Markdown) or the evidence report (TXT / JSON / HTML) | — |
+| 19 | **Intelligence Reports** | Reopen the intelligence report generated at the end of every investigation; follow evidence links; export | — |
 | 13 | **API Configuration** | Add optional API keys (stored encrypted) | — |
 | 14 | **Settings** | Ollama URL/model, DB backup, encryption mode | — |
 | 15 | **AI Analyst** | Ollama connection/model status | — |
@@ -212,6 +213,39 @@ Open any investigation → **ai**. The model receives **only the stored findings
 
 ---
 
+## Intelligence Report (menu 19, and after every investigation)
+
+Every saved investigation, of every type, ends with an **Intelligence Report**. It is generated automatically, stored
+with the investigation, shown as a brief panel when the investigation finishes (`intel` opens the full document), and
+can be reopened later from menu 19, History, or the post-investigation menu. Investigations saved before this feature
+get a report the first time they are opened. Sections:
+
+1. Investigation Overview · 2. Executive Summary · 3. Key Findings · 4. Evidence and Source Registry ·
+5. Corroboration Analysis · 6. Contradictions and Discrepancies · 7. Intelligence Assessment ·
+8. Confidence and Limitations · 9. Unresolved Questions · 10. Recommended Next Steps · 11. Source References
+
+- **Status is never flattering.** `COMPLETE` only when every consulted source answered and no errors were reported;
+  `PARTIAL` when sources were not configured, skipped or manual-only; `INCOMPLETE` when sources failed or were
+  blocked, the module reported errors, or nothing was searched; `FAILED` when the report itself could not be built
+  (the investigation is still saved, and the error is shown).
+- **Provenance is kept verbatim.** Each finding (E1, E2, ...) keeps its source name, exact source URL, retrieval time,
+  publication date when the source gave one, supporting evidence and the module's grade. Missing metadata is listed
+  as a gap and shown as "not recorded"; nothing is filled in. Type `E3` or `S2` in the report view to open an item.
+- **Claim classes** separate verified facts, corroborated claims, single-source claims, unverified claims, analytical
+  inferences and contradictory information. Corroboration needs two distinct origins (URL hosts) *and* two source
+  names; the same page found by two search engines counts once. The engine never raises a module's grade, and
+  `UNVERIFIED` leads (e.g. name matches) are never upgraded by repetition.
+- **Overall evidence assessment** (`HIGH` / `MODERATE` / `LOW` / `INSUFFICIENT`) is a documented rule over claim
+  classes, capped by contradictions, incomplete status and missing source URLs. It is not a probability and not an
+  assessment of the subject.
+- **No unsupported conclusions.** Inferences must cite the evidence they rest on, list alternative interpretations,
+  and mark co-occurrence as correlation, not causation. The engine draws no inference of identity, location,
+  criminality, dangerousness or wrongdoing; a guard rejects such statements and the executive summary only highlights
+  verified or corroborated findings, never unverified allegations.
+- **Export** to PDF or Markdown from the report view or Reports (menu 12) → `reports/TP-<date>-<id>-intel.{pdf,md}`.
+  The PDF is produced without extra dependencies (standard fonts; characters outside Windows-1252 become `?` in the
+  PDF only) and every source URL is a clickable link carrying the exact URL.
+
 ## Project layout
 
 ```
@@ -221,16 +255,18 @@ TRACEPOINT/
   requirements.txt  README.md
   core/      models, database (SQLite+migrations), http, search_engine,
              correlation, reports, ai, security (DPAPI), configuration, investigation
+  core/intelligence/  Intelligence Report engine: engine, models, evidence_analyzer,
+             confidence, templates, formatter (Markdown), pdf
   modules/   email, phone, username, domain, ip, social, security  (+ data/ disposable list)
   providers/ search_providers, domain_providers, ip_providers
-  ui/        theme, render
+  ui/        theme, render, report_view
   data/  reports/  logs/  config/
 ```
 
 ## Reports & data
 
 - The reports folder is always `<app folder>\reports` (resolved from the app root, never a hard-coded path). Older history entries that recorded another location are resolved by file name; a missing file is marked `[missing]`.
-- Reports are written to `reports/` as `TP-<date>-<id>.{txt,json,html}`. The HTML report is self-contained (no external assets).
+- Reports are written to `reports/` as `TP-<date>-<id>.{txt,json,html}`. The HTML report is self-contained (no external assets). Intelligence Report exports are `TP-<date>-<id>-intel.{pdf,md}`; the report itself is stored in the database (`intel_reports`, schema v3) and deleted with its investigation.
 - All investigations persist in `data/tracepoint.db` and survive restarts; **History** reopens or deletes them.
 - **Settings → backup-db** snapshots the database into `data/backups/` (last 10 kept).
 
