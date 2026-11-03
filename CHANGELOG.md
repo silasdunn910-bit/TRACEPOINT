@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (Free API integration layer)
+- New `integrations/` package: one adapter contract (credentials, classified requests, timeouts, retry/backoff, per-provider pacing, quota capture from headers, normalized results with `source_url`/`timestamp`/`limitations`) and a manager (status, test, lookup, enable/disable, persistence). A provider is CONNECTED only after a real request succeeds; a stored key alone shows NOT TESTED. One failing provider never raises into the app.
+- 28 adapters: SearXNG, Brave, Google CSE (wrapping the existing search providers), GDELT, Internet Archive, Wikipedia, IPinfo, IPdata, IP-DB, OpenIPAPI, BGPView (service currently offline), RIPEstat (added as the working BGP source), RDAP, AbuseIPDB, VirusTotal, AlienVault OTX, urlscan.io, ThreatFox, URLhaus, CourtListener, GovInfo, SEC EDGAR, USAspending, FEC, OpenCorporates, crt.sh, Wayback Machine, Cloudflare DoH. VirusTotal and urlscan are lookup-only; nothing is uploaded or submitted.
+- Menu 18 *Integrations Dashboard* (status, tier, last success, quota, test, lookup, set key, disable). Shows variable names, never values.
+- Credentials: environment variables (see `.env.example`) now back the encrypted store; a project-root `.env` is also read. Blank `.env` values are ignored.
+- New settings entries (IPdata, IP-DB, OpenIPAPI, OTX, urlscan, abuse.ch, CourtListener, FEC, SEC contact) appear in API Configuration.
+- Docs: `API_SETUP.md`, `INTEGRATION_STATUS.md`, `API_PROVIDER_REFERENCE.md`. Tests: `tests/test_integrations.py` (mocked) and opt-in `tests/test_integrations_live.py`.
+
 ## Unreleased (Phase 8, part 2: jurisdiction selection and search coverage)
 - Court Records and Sex Offender Registry open with a *Jurisdiction Selection* menu: United States (Nationwide), Select a State, Federal Courts (National Registry in the registry module). States accept postal codes or full names, any case, surrounding whitespace; all 50 states and DC; invalid input is explained and can be retried.
 - Provider discovery per jurisdiction (federal, state, county where catalogued); automated and manual sources are shown separately. No provider, county source or endpoint was added or guessed: only North Carolina and the federal/national sources exist.

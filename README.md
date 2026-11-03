@@ -194,6 +194,8 @@ Set these in **API Configuration** (menu 13). TRACEPOINT is fully useful **witho
 
 **Search order.** Configured providers are tried first. DuckDuckGo is used only if none is configured, or as a labelled fallback when every configured provider fails. A search that never ran is reported as an error, never as "no results".
 
+**Integrations Dashboard (menu 18).** 28 free or free-tier sources (network, threat-intel, public-records, archive and DNS lookups) with live status, quota, test and lookup. Keys can also come from environment variables / a git-ignored `.env` (template: `.env.example`). See `API_SETUP.md`, `INTEGRATION_STATUS.md` and `API_PROVIDER_REFERENCE.md`.
+
 Keys are encrypted at rest with **Windows DPAPI** (scoped to your Windows user); they are never printed in full, never written to logs, and `config/.env` / the database are git-ignored. On non-Windows dev machines a clearly-labeled base64 fallback is used and the app says so.
 
 ---

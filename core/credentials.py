@@ -62,6 +62,8 @@ def save_credential(db, key: str, raw: str) -> tuple[bool, str]:
         return False, err
     db.set_secret(key, value)
     search_engine.clear_test_results(key)  # an older CONNECTED result no longer applies
+    from integrations import manager
+    manager.forget(key)
     return True, f"Stored (encrypted) for {API_INTEGRATIONS[key][0]}. Status is CONFIGURED until you run a connection test."
 
 
@@ -73,4 +75,6 @@ def remove_credential(db, key: str, confirm: Callable[[], bool]) -> tuple[bool, 
         return False, "Cancelled; credential unchanged."
     db.delete_secret(key)
     search_engine.clear_test_results(key)
+    from integrations import manager
+    manager.forget(key)
     return True, f"Removed {label}."

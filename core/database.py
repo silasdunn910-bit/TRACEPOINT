@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import threading
@@ -357,11 +358,20 @@ class Database:
     def get_secret(self, name: str) -> str:
         rows = self.q("SELECT secret FROM api_config WHERE name=?", (name,))
         if not rows:
-            return ""
+            return self._env_secret(name)
         try:
             value = decrypt_secret(rows[0]["secret"])
         except Exception:
             return ""
+        register_secret(value)
+        return value
+
+    @staticmethod
+    def _env_secret(name: str) -> str:
+        """Fallback: the credential's environment variable (from the shell or a git-ignored .env file)."""
+        from .configuration import ENV_VARS
+        var = ENV_VARS.get(name)
+        value = os.environ.get(var, "").strip() if var else ""
         register_secret(value)
         return value
 

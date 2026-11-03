@@ -42,11 +42,12 @@ def _load_env_file(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip().strip("'\"")
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) and key not in os.environ:
+        if value and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) and key not in os.environ:  # blank = unset
             os.environ[key] = value
 
 
 _load_env_file(CONFIG_DIR / ".env")
+_load_env_file(ROOT / ".env")  # a project-root .env (git-ignored; see .env.example) works too
 
 DEFAULT_TIMEOUT = 12  # seconds for any outbound request
 USER_AGENT = f"TRACEPOINT/{VERSION} (local OSINT research tool)"
@@ -64,6 +65,27 @@ API_INTEGRATIONS: dict[str, tuple[str, str, str]] = {
     "virustotal_key": ("VirusTotal key", "Domain/IP", "https://www.virustotal.com/gui/join-us (free tier)"),
     "hibp_key": ("Have I Been Pwned key", "Breach", "https://haveibeenpwned.com/API/Key (paid)"),
     "opencorporates_token": ("OpenCorporates token", "Business", "https://opencorporates.com/api_accounts/new"),
+    "ipdata_key": ("IPdata API key", "IP", "https://ipdata.co/sign-up.html (free tier)"),
+    "otx_key": ("AlienVault OTX key", "Cyber", "https://otx.alienvault.com/accounts/signup/ (free)"),
+    "urlscan_key": ("urlscan.io API key", "Cyber", "https://urlscan.io/user/signup (free tier)"),
+    "abusech_key": ("abuse.ch Auth-Key (ThreatFox + URLhaus)", "Cyber", "https://auth.abuse.ch/ (free)"),
+    "courtlistener_key": ("CourtListener API token", "Court", "https://www.courtlistener.com/sign-up/ (free)"),
+    "fec_key": ("FEC / api.data.gov key", "Gov", "https://api.data.gov/signup/ (free)"),
+    "ipdb_key": ("IP-DB API key", "IP", "https://ip-db.com/en/api-docs (free: 1,000 checks/day)"),
+    "openipapi_key": ("OpenIPAPI key", "IP", "https://www.openipapi.com/ (free: 10,000 lookups/month)"),
+    "sec_contact": ("SEC EDGAR contact (name + email for User-Agent)", "Gov", "SEC requires a declared contact; no key"),
+}
+
+# Environment-variable names for every credential (see .env.example). The encrypted database value wins
+# when both exist; an environment variable is the fallback so a .env file works without the menu.
+ENV_VARS: dict[str, str] = {
+    "brave_search_key": "BRAVE_SEARCH_API_KEY", "google_cse_key": "GOOGLE_SEARCH_API_KEY",
+    "google_cse_cx": "GOOGLE_SEARCH_CX", "searxng_url": "SEARXNG_URL", "govinfo_key": "GOVINFO_API_KEY",
+    "ipinfo_token": "IPINFO_TOKEN", "abuseipdb_key": "ABUSEIPDB_API_KEY", "virustotal_key": "VIRUSTOTAL_API_KEY",
+    "hibp_key": "HIBP_API_KEY", "opencorporates_token": "OPENCORPORATES_API_KEY", "ipdata_key": "IPDATA_API_KEY",
+    "otx_key": "OTX_API_KEY", "urlscan_key": "URLSCAN_API_KEY", "abusech_key": "ABUSECH_AUTH_KEY",
+    "courtlistener_key": "COURTLISTENER_API_KEY", "fec_key": "FEC_API_KEY", "sec_contact": "SEC_EDGAR_CONTACT",
+    "ipdb_key": "IPDB_API_KEY", "openipapi_key": "OPENIPAPI_API_KEY",
 }
 
 

@@ -40,7 +40,7 @@ ACTIONS = [
     ("9", "universal", "Universal Search  [tp.dim](auto-detect identifier)[/tp.dim]"),
     ("10", "graph", "Relationship Explorer"), ("11", "history", "Investigation History"),
     ("12", "reports", "Reports"), ("13", "api", "API Configuration"),
-    ("14", "settings", "Settings"), ("15", "ai", "AI Analyst Status"), ("0", "exit", "Exit"),
+    ("18", "integrations", "Integrations Dashboard"), ("14", "settings", "Settings"), ("15", "ai", "AI Analyst Status"), ("0", "exit", "Exit"),
 ]
 
 
@@ -511,6 +511,70 @@ def api_config():
         console.print(f"[{'tp.ok' if ok else 'tp.warn'}]{'✓ ' if ok else ''}{msg}[/{'tp.ok' if ok else 'tp.warn'}]")
 
 
+def integrations_dashboard():
+    """Status of every free-API integration. Shows no credential values; tests are live requests."""
+    import json as _json
+    from core import credentials
+    from integrations import manager
+    from ui import integrations_view as iv
+    while True:
+        console.print(Rule("[tp.head]INTEGRATIONS[/tp.head]", style="tp.rule"))
+        console.print("[tp.dim]CONNECTED means a live request succeeded; a stored key alone shows NOT TESTED. "
+                      "Keys are set with 'k N' (stored encrypted) or through the environment variables in .env.example.[/tp.dim]\n")
+        rows = manager.statuses()
+        console.print(iv.table(rows))
+        sel = ask("N details | t N test | ta test all | l N lookup | k N set key | x N disable/enable | blank to return")
+        if not sel:
+            return
+        cmd, _, arg = sel.partition(" ")
+        cmd, arg = cmd.lower(), arg.strip()
+        if cmd == "ta":
+            with console.status("Testing every configured integration…"):
+                manager.test_all()
+            continue
+        num = arg if cmd in ("t", "l", "k", "x") else cmd
+        if not num.isdigit() or not (1 <= int(num) <= len(rows)):
+            console.print("[tp.warn]Invalid selection.[/tp.warn]"); continue
+        row = rows[int(num) - 1]
+        if cmd == "t":
+            with console.status(f"Testing {row['name']}…"):
+                row = manager.test(row["id"])
+            console.print(iv.detail(row))
+        elif cmd == "x":
+            manager.set_disabled(row["id"], row["status"] != "DISABLED")
+        elif cmd == "k":
+            p = manager.get(row["id"])
+            keys = p.secret_keys + p.optional_keys
+            if not keys:
+                console.print("[tp.dim]This provider needs no credentials.[/tp.dim]"); continue
+            for k in keys:
+                console.print(f"[tp.dim]{API_INTEGRATIONS[k][2]}[/tp.dim]")
+                val = Prompt.ask(f"Value for {API_INTEGRATIONS[k][0]} (blank to skip)", password=(k != "searxng_url"),
+                                 console=console)
+                if val.strip():
+                    ok, msg = credentials.save_credential(db, k, val)
+                    console.print(f"[{'tp.ok' if ok else 'tp.warn'}]{msg}[/{'tp.ok' if ok else 'tp.warn'}]")
+        elif cmd == "l":
+            kinds = list(row["lookups"])
+            kind = kinds[0] if len(kinds) == 1 else Prompt.ask("Lookup type", choices=kinds, default=kinds[0], console=console)
+            val = ask(f"{kind} to look up")
+            if not val:
+                continue
+            with console.status(f"Querying {row['name']}…"):
+                res = manager.lookup(row["id"], kind, val)
+            if not res["ok"]:
+                console.print(f"[tp.err]{res['status']}[/tp.err] {escape(res['error'])}")
+            else:
+                r = res["result"]
+                console.print(Panel(escape(_json.dumps({k: r[k] for k in ("provider", "query", "timestamp", "source_url",
+                                                                       "result_type", "limitations")}, indent=2))
+                                    + "\n\n" + escape(_json.dumps(r["data"].get("summary", r["data"]), indent=2, default=str)[:3000]),
+                                    title="[tp.head]RESULT[/tp.head]", border_style="tp.rule"))
+        else:
+            console.print(iv.detail(row))
+        console.input("[tp.dim]Enter…[/tp.dim]")
+
+
 def settings():
     console.print(Rule("[tp.head]SETTINGS[/tp.head]", style="tp.rule"))
     ok, models, err = ai.status()
@@ -809,7 +873,7 @@ def registry_flow():
 
 DISPATCH = {
     "universal": universal_search, "graph": relationship_explorer, "history": history,
-    "reports": reports_menu, "api": api_config, "settings": settings, "ai": ai_status_panel,
+    "reports": reports_menu, "api": api_config, "integrations": integrations_dashboard, "settings": settings, "ai": ai_status_panel,
 }
 RECORD_FLOWS = {"court": court_records_flow, "registry": registry_flow}
 EXAMPLES = {"email": "you@example.com", "phone": "+1 415 555 2671", "username": "your_handle",
